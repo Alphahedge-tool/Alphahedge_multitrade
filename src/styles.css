@@ -675,14 +675,17 @@ select { min-width: 96px; }
 
 .chain-table {
   width: 100%;
-  min-width: 560px;
+  min-width: 680px;
   border-collapse: separate;
   border-spacing: 0;
-  table-layout: auto;
+  table-layout: fixed;
   background: var(--ao-surface);
 }
-/* Give the LTP columns room for the 4-button hover group */
-.chain-table .ltp { min-width: 118px; }
+
+.chain-table .col-oi { width: 14%; }
+.chain-table .col-chg { width: 14%; }
+.chain-table .col-ltp { width: 17%; }
+.chain-table .col-strike { width: 10%; }
 
 .chain-table th,
 .chain-table td {
@@ -767,9 +770,10 @@ select { min-width: 96px; }
 .call-oi { text-align: right; }
 .put-oi  { text-align: left; }
 
-.chain-table .ltp { font-weight: 700; transition: background-color .15s ease; }
-.chain-table .call-ltp { color: var(--ao-green); text-align: right; }
-.chain-table .put-ltp  { color: var(--ao-red);  text-align: left; }
+.chain-table .ltp-head { text-align: center; }
+.chain-table .ltp { font-weight: 700; text-align: center; transition: background-color .15s ease; }
+.chain-table .call-ltp { color: var(--ao-green); }
+.chain-table .put-ltp  { color: var(--ao-red); }
 
 /* Tick flash — green when LTP rises, red when it falls */
 @keyframes ltp-flash-up {
@@ -878,8 +882,8 @@ select { min-width: 96px; }
 .chain-table .atm-row:hover .has-actions .trade-actions { background: var(--ao-blue-surface); }
 .has-actions.itm-call .trade-actions { background: var(--ao-up-bg); }
 .has-actions.itm-put  .trade-actions { background: var(--ao-down-bg); }
-.call-ltp .trade-actions { justify-content: flex-end; transform: translateX(8px); }
-.put-ltp  .trade-actions { justify-content: flex-start; transform: translateX(-8px); }
+.call-ltp .trade-actions,
+.put-ltp .trade-actions { justify-content: center; transform: translateY(-4px); }
 
 /* Reveal on row hover */
 .chain-table tbody tr:hover .ltp-val { opacity: 0; }

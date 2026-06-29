@@ -678,6 +678,15 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
 
       <div className="chain-table-wrap">
         <table className="chain-table">
+          <colgroup>
+            <col className="col-oi" />
+            <col className="col-chg" />
+            <col className="col-ltp" />
+            <col className="col-strike" />
+            <col className="col-ltp" />
+            <col className="col-chg" />
+            <col className="col-oi" />
+          </colgroup>
           <thead>
             <tr className="chain-side-head">
               <th className="side-call" colSpan="3">CALL</th>
@@ -687,9 +696,9 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
             <tr>
               <th>OI</th>
               <th>Chng%</th>
-              <th>LTP</th>
+              <th className="ltp-head">LTP</th>
               <th>Strike</th>
-              <th>LTP</th>
+              <th className="ltp-head">LTP</th>
               <th>Chng%</th>
               <th>OI</th>
             </tr>
