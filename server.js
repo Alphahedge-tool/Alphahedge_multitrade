@@ -4,10 +4,143 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
+import { WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 3001);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const STATIC_ROOT = path.join(ROOT, 'dist');
 const SMARTAPI_BASE = 'https://apiconnect.angelone.in';
+const SMART_STREAM_URL = 'wss://smartapisocket.angelone.in/smart-stream';
+const MASTER_URL = 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
+const MASTER_FILE = path.join(ROOT, 'scrip_master.json');
+const INDEX_FILE = path.join(ROOT, 'scrip_index.json');
+
+// SmartWebSocket exchangeType codes.
+const WS_EXCHANGE_TYPE = { NSE: 1, NFO: 2, BSE: 3, BFO: 4, MCX: 5, CDS: 7, NCDEX: 7 };
+
+// Set FEED_DEBUG=1 to log raw ticks while diagnosing the live feed.
+const FEED_DEBUG = process.env.FEED_DEBUG === '1';
+
+// In-memory master cache: parse the 8.8 MB scrip master once, reuse for every
+// option-chain request, and re-download from Angel at most once per day.
+const MASTER_TTL_MS = 24 * 60 * 60 * 1000;
+const masterCache = { data: null, index: null, loadedAt: 0 };
+let masterLoading = null; // de-dupes concurrent loads
+
+// MCX commodity underlyings that trade options (exch_seg === 'MCX').
+const MCX_SYMBOLS = new Set([
+  'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'CRUDEOIL', 'CRUDEOILM',
+  'NATURALGAS', 'NATGASMINI', 'COPPER', 'ZINC', 'MCXBULLDEX',
+]);
+
+// ─── Live market feed (Angel SmartWebSocket 2.0 → browser SSE) ───
+// One upstream WebSocket to Angel; browser clients attach via SSE and get
+// {token, ltp, oi} ticks. Re-subscribing replaces the active token list.
+const sseClients = new Set();
+let feedSocket = null;
+let feedHeartbeat = null;
+let feedSubscription = null; // { credentials, tokenList }
+
+function broadcastTick(tick) {
+  const line = `data: ${JSON.stringify(tick)}\n\n`;
+  for (const res of sseClients) {
+    res.write(line);
+  }
+}
+
+function broadcastStatus(status) {
+  const line = `event: status\ndata: ${JSON.stringify(status)}\n\n`;
+  for (const res of sseClients) {
+    res.write(line);
+  }
+}
+
+// Open (or replace) the upstream Angel feed for a given token list.
+function startFeed(credentials, tokenList) {
+  feedSubscription = { credentials, tokenList };
+  closeFeed();
+
+  const socket = new WebSocket(SMART_STREAM_URL, {
+    headers: {
+      // Angel's SDK passes the raw JWT here (no "Bearer " prefix).
+      Authorization: credentials.jwtToken,
+      'x-api-key': credentials.apiKey,
+      'x-client-code': credentials.clientCode,
+      'x-feed-token': credentials.feedToken,
+    },
+  });
+  feedSocket = socket;
+
+  socket.on('upgrade', (res) => {
+    if (FEED_DEBUG) console.log('[feed] handshake status', res.statusCode, res.statusMessage);
+  });
+
+  socket.on('open', () => {
+    if (FEED_DEBUG) console.log('[feed] WS OPEN → sending subscribe', JSON.stringify(tokenList));
+    broadcastStatus({ connected: true, message: 'Live feed connected' });
+    socket.send(JSON.stringify({
+      correlationID: 'optionchain',
+      action: 1, // subscribe
+      params: { mode: 3, tokenList }, // mode 3 = SNAP_QUOTE (LTP + OI)
+    }));
+    clearInterval(feedHeartbeat);
+    feedHeartbeat = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+    }, 10_000); // Angel requires a ping every ~10s
+  });
+
+  socket.on('message', (data, isBinary) => {
+    if (FEED_DEBUG) {
+      if (isBinary) {
+        const head = Buffer.from(data).subarray(0, 60).toString('hex');
+        console.log(`[feed] binary len=${data.length} mode=${data[0]} exch=${data[1]} head=${head}`);
+      } else {
+        console.log('[feed] text:', data.toString().slice(0, 200));
+      }
+    }
+    if (!isBinary) return; // pong/text/error frames
+    const tick = parseTick(data);
+    if (tick) {
+      if (FEED_DEBUG) console.log(`[feed] tick token=${tick.token} ltp=${tick.ltp} oi=${tick.oi}`);
+      broadcastTick(tick);
+    }
+  });
+
+  socket.on('close', (code, reason) => {
+    if (FEED_DEBUG) console.log('[feed] WS CLOSE code=' + code, 'reason=' + (reason?.toString() || ''));
+    clearInterval(feedHeartbeat);
+    broadcastStatus({ connected: false, message: `Live feed closed (${code})` });
+  });
+
+  socket.on('error', (error) => {
+    if (FEED_DEBUG) console.log('[feed] WS ERROR', error.message);
+    broadcastStatus({ connected: false, message: `Feed error: ${error.message}` });
+  });
+}
+
+function closeFeed() {
+  clearInterval(feedHeartbeat);
+  if (feedSocket) {
+    try { feedSocket.removeAllListeners(); feedSocket.terminate(); } catch {}
+    feedSocket = null;
+  }
+}
+
+// Parse one SmartWebSocket V2 binary packet → { token, ltp, oi, close }.
+// Official layout (little-endian): [0]=mode, [1]=exchangeType, [2:27]=token
+// (null-terminated ascii), [43:51]=LTP int64 (paise → ÷100). SNAP_QUOTE
+// (mode 3) adds closed_price at [115:123] and open_interest at [131:139].
+function parseTick(buffer) {
+  if (buffer.length < 51) return null;
+  const token = buffer.toString('ascii', 2, 27).replace(/\0.*$/, '').trim();
+  if (!token) return null;
+  const ltp = Number(buffer.readBigInt64LE(43)) / 100;
+  let oi = null;
+  let close = null;
+  if (buffer.length >= 123) close = Number(buffer.readBigInt64LE(115)) / 100;
+  if (buffer.length >= 139) oi = Number(buffer.readBigInt64LE(131));
+  return { token, ltp, oi, close };
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -28,6 +161,37 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/api/angel/master-index') {
+      const index = await getMasterIndex();
+      sendJson(res, 200, index);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/angel/refresh-master') {
+      const result = await refreshMaster();
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/angel/option-chain') {
+      const body = await readJson(req);
+      const result = await getOptionChain(body);
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/api/angel/stream') {
+      handleStream(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/angel/subscribe') {
+      const body = await readJson(req);
+      const result = subscribeFeed(body);
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'GET') {
       await serveStatic(req, res);
       return;
@@ -41,7 +205,77 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Angel One panel running at http://localhost:${PORT}`);
+  // Warm the master cache on boot so the first option-chain load is instant.
+  ensureMaster().catch((error) => console.error('Master warm-up failed:', error.message));
 });
+
+// SSE: keep the connection open and register it for tick broadcasts.
+function handleStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.write('retry: 3000\n\n');
+  res.write(`event: status\ndata: ${JSON.stringify({ connected: !!feedSocket, message: 'Stream open' })}\n\n`);
+  sseClients.add(res);
+
+  const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 20_000);
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    sseClients.delete(res);
+    if (!sseClients.size) closeFeed(); // no listeners → drop upstream feed
+  });
+}
+
+// Start/replace the Angel feed for the tokens of a loaded option chain.
+// Body: { credentials, exchange, tokens:[], spot:{token,exchange} }
+// The spot/underlying may sit on a different exchange (e.g. NSE index vs NFO
+// options), so we group everything by exchangeType.
+function subscribeFeed({ credentials = {}, exchange = 'NFO', tokens = [], spot = null } = {}) {
+  if (!credentials.jwtToken || !credentials.feedToken) {
+    throw new Error('Live feed needs an active session (jwtToken + feedToken)');
+  }
+  if (!tokens.length) throw new Error('No tokens to subscribe');
+
+  const byExchange = new Map(); // exchangeType -> Set(tokens)
+  const add = (exch, token) => {
+    if (!token) return;
+    const type = WS_EXCHANGE_TYPE[exch] || WS_EXCHANGE_TYPE.NFO;
+    if (!byExchange.has(type)) byExchange.set(type, new Set());
+    byExchange.get(type).add(String(token));
+  };
+  for (const token of tokens) add(exchange, token);
+  if (spot?.token) add(spot.exchange || exchange, spot.token);
+
+  const tokenList = [...byExchange.entries()].map(([exchangeType, set]) => ({
+    exchangeType,
+    tokens: [...set],
+  }));
+
+  if (FEED_DEBUG) {
+    const mask = (v) => (v ? `${String(v).slice(0, 6)}…(${String(v).length})` : 'MISSING');
+    console.log(`[feed] subscribe exchange=${exchange} groups=${tokenList.length} tokens=${tokens.length}+spot`, tokens.slice(0, 3));
+    console.log('[feed] spot token=' + (spot?.token || 'none') + ' exch=' + (spot?.exchange || '-'));
+    console.log('[feed] creds: jwt=' + mask(credentials.jwtToken),
+      'feedToken=' + mask(credentials.feedToken),
+      'apiKey=' + mask(credentials.apiKey),
+      'client=' + (credentials.clientCode || 'MISSING'));
+  }
+  startFeed(credentials, tokenList);
+  return { status: true, subscribed: tokens.length, exchange };
+}
+
+// Returns the client's existing session as-is when it carries a JWT, so the
+// option chain can skip the getRMS round-trip. Null when no usable session.
+function resolveSession(client) {
+  const session = client.session;
+  if (session?.jwtToken) {
+    return { ...session, apiKey: client.apiKey, feedToken: session.feedToken || null };
+  }
+  return null;
+}
 
 async function autoLogin(client) {
   validateClient(client);
@@ -55,6 +289,246 @@ async function autoLogin(client) {
 
   const login = await loginWithTotp(client, headers);
   return rmsResultFromLogin(client, headers, login, 'totp-login');
+}
+
+async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', window = 12 } = {}) {
+  if (!expiry) throw new Error('Expiry is required');
+
+  // Reuse the client's existing JWT directly — no getRMS re-validation on every
+  // load. If the quote calls later 401, we re-login once and retry.
+  let session = resolveSession(client);
+  let jwtToken = session?.jwtToken;
+  if (!jwtToken) {
+    const login = await autoLogin(client);
+    session = login.session;
+    jwtToken = session?.jwtToken;
+  }
+  if (!jwtToken) throw new Error('Angel session unavailable');
+  const login = { session };
+
+  const master = await getMasterData();
+  const upperSymbol = String(symbol).toUpperCase();
+  const upperExpiry = String(expiry).toUpperCase();
+  const spotTokens = {
+    NIFTY: ['NSE', '99926000'],
+    BANKNIFTY: ['NSE', '99926009'],
+    FINNIFTY: ['NSE', '99926037'],
+    MIDCPNIFTY: ['NSE', '99926074'],
+    SENSEX: ['BSE', '99919000'],
+  };
+
+  const ceTokens = new Map();
+  const peTokens = new Map();
+  // Pick the F&O segment the symbol's contracts live in.
+  const exchange = upperSymbol === 'SENSEX'
+    ? 'BFO'
+    : MCX_SYMBOLS.has(upperSymbol)
+      ? 'MCX'
+      : 'NFO';
+
+  // For MCX there's no index spot token, so we read the underlying price from
+  // the nearest FUTURE contract. Collect candidate futures while scanning.
+  const futCandidates = []; // { token, expiryMs }
+  for (const row of master) {
+    if (row.n !== upperSymbol || row.g !== exchange) continue;
+    const symbol = String(row.s);
+    if (exchange === 'MCX' && /FUT$/.test(symbol)) {
+      futCandidates.push({ token: String(row.t), expiryMs: Date.parse(row.e) || Infinity });
+    }
+    if (row.e !== upperExpiry) continue;
+    const strike = normalizeStrike(Number(row.k || 0), exchange);
+    if (symbol.endsWith('CE')) ceTokens.set(strike, String(row.t));
+    if (symbol.endsWith('PE')) peTokens.set(strike, String(row.t));
+  }
+
+  // Nearest future on/after the option expiry, else the earliest available.
+  const optionExpiryMs = Date.parse(upperExpiry) || 0;
+  futCandidates.sort((a, b) => a.expiryMs - b.expiryMs);
+  const futToken = (
+    futCandidates.find((f) => f.expiryMs >= optionExpiryMs) || futCandidates[0]
+  )?.token || null;
+
+  if (!ceTokens.size && !peTokens.size) {
+    throw new Error(`No option tokens found for ${upperSymbol} ${upperExpiry}`);
+  }
+
+  const strikes = [...new Set([...ceTokens.keys(), ...peTokens.keys()])].sort((a, b) => a - b);
+  const headers = smartHeaders(client.apiKey);
+
+  // Real spot: index LTP token for NSE/BSE; the future's LTP for MCX. Only
+  // fall back to the median strike if neither is available.
+  let spot = strikes.length ? strikes[Math.floor(strikes.length / 2)] : 0;
+  const spotPair = spotTokens[upperSymbol] || (futToken ? [exchange, futToken] : null);
+  let spotExchange = null;
+  let spotToken = null;
+  if (spotPair) {
+    [spotExchange, spotToken] = spotPair;
+    const spotRes = await smartFetch('/rest/secure/angelbroking/market/v1/quote', {
+      method: 'POST',
+      headers: authHeaders(headers, jwtToken),
+      body: { mode: 'LTP', exchangeTokens: { [spotExchange]: [spotToken] } },
+    });
+    spot = Number(spotRes.data?.fetched?.[0]?.ltp || 0) || spot;
+  }
+
+  let atm = strikes[0];
+  for (const strike of strikes) {
+    if (Math.abs(strike - spot) < Math.abs(atm - spot)) atm = strike;
+  }
+
+  const atmIndex = Math.max(0, strikes.indexOf(atm));
+  const sideWindow = Math.max(1, Math.min(Number(window) || 12, 30));
+  const finalStrikes = strikes.slice(Math.max(0, atmIndex - sideWindow), atmIndex + sideWindow + 1);
+  const tokensForLive = [];
+  // Per-strike token arrays (aligned with finalStrikes) so the live feed can
+  // map an incoming tick's token back to its row + call/put side.
+  const callTokens = [];
+  const putTokens = [];
+  for (const strike of finalStrikes) {
+    const ce = ceTokens.get(strike) || null;
+    const pe = peTokens.get(strike) || null;
+    callTokens.push(ce);
+    putTokens.push(pe);
+    if (ce) tokensForLive.push(ce);
+    if (pe) tokensForLive.push(pe);
+  }
+
+  // The live FULL quote is mandatory — it's also where a dead cached JWT shows
+  // up. On failure, re-login once and retry with a fresh token.
+  let liveRes;
+  try {
+    liveRes = await smartFetch('/rest/secure/angelbroking/market/v1/quote', {
+      method: 'POST',
+      headers: authHeaders(headers, jwtToken),
+      body: { mode: 'FULL', exchangeTokens: { [exchange]: tokensForLive } },
+    });
+  } catch (error) {
+    const relogin = await autoLogin({ ...client, session: null });
+    jwtToken = relogin.session?.jwtToken;
+    if (!jwtToken) throw error;
+    login.session = relogin.session;
+    liveRes = await smartFetch('/rest/secure/angelbroking/market/v1/quote', {
+      method: 'POST',
+      headers: authHeaders(headers, jwtToken),
+      body: { mode: 'FULL', exchangeTokens: { [exchange]: tokensForLive } },
+    });
+  }
+
+  const greekRes = await smartFetch('/rest/secure/angelbroking/marketData/v1/optionGreek', {
+    method: 'POST',
+    headers: authHeaders(headers, jwtToken),
+    body: { name: upperSymbol, expirydate: upperExpiry },
+  }).catch(() => ({ data: [] }));
+
+  const callOI = new Map();
+  const putOI = new Map();
+  const callLtp = new Map();
+  const putLtp = new Map();
+  const callClose = new Map();
+  const putClose = new Map();
+  for (const quote of liveRes.data?.fetched || []) {
+    const token = String(quote.symbolToken);
+    const oi = Number(quote.opnInterest || 0);
+    const ltp = Number(
+      quote.ltp ??
+      quote.lastTradePrice ??
+      quote.lastPrice ??
+      quote.close ??
+      0
+    );
+    const close = Number(quote.close ?? quote.previousClose ?? 0); // prev-day close for Chng%
+    const ceStrike = findStrikeByToken(ceTokens, token);
+    const peStrike = findStrikeByToken(peTokens, token);
+    if (ceStrike != null) {
+      callOI.set(ceStrike, oi);
+      callLtp.set(ceStrike, ltp);
+      callClose.set(ceStrike, close);
+    }
+    if (peStrike != null) {
+      putOI.set(peStrike, oi);
+      putLtp.set(peStrike, ltp);
+      putClose.set(peStrike, close);
+    }
+  }
+
+  const callDelta = new Map();
+  const putDelta = new Map();
+  for (const greek of greekRes.data || []) {
+    const strike = Math.trunc(Number(greek.strikePrice || 0));
+    if (String(greek.optionType || '').includes('CE')) callDelta.set(strike, Number(greek.delta || 0));
+    if (String(greek.optionType || '').includes('PE')) putDelta.set(strike, Number(greek.delta || 0));
+  }
+
+  const outCall = [];
+  const outPut = [];
+  const exposureCall = [];
+  const exposurePut = [];
+  const outCallLtp = [];
+  const outPutLtp = [];
+  const outCallClose = [];
+  const outPutClose = [];
+  for (const strike of finalStrikes) {
+    const coi = callOI.get(strike) || 0;
+    const poi = putOI.get(strike) || 0;
+    outCall.push(coi);
+    outPut.push(poi);
+    outCallLtp.push(callLtp.get(strike) || 0);
+    outPutLtp.push(putLtp.get(strike) || 0);
+    outCallClose.push(callClose.get(strike) || 0);
+    outPutClose.push(putClose.get(strike) || 0);
+    exposureCall.push(Math.abs(coi * (callDelta.get(strike) || 0)));
+    exposurePut.push(Math.abs(poi * (putDelta.get(strike) || 0)));
+  }
+
+  const totalPut = outPut.reduce((sum, value) => sum + value, 0);
+  const totalCall = outCall.reduce((sum, value) => sum + value, 0);
+
+  return {
+    status: true,
+    symbol: upperSymbol,
+    expiry: upperExpiry,
+    spot,
+    atm,
+    pcr: totalCall ? Number((totalPut / totalCall).toFixed(2)) : 0,
+    strikes: finalStrikes,
+    callOI: outCall,
+    putOI: outPut,
+    callLtp: outCallLtp,
+    putLtp: outPutLtp,
+    callClose: outCallClose,
+    putClose: outPutClose,
+    manipulatedCallOI: exposureCall,
+    manipulatedPutOI: exposurePut,
+    // Live-feed wiring for the browser:
+    exchange,
+    callTokens,
+    putTokens,
+    liveTokens: tokensForLive,
+    spotToken,
+    spotExchange,
+    feed: {
+      jwtToken,
+      feedToken: login.session?.feedToken || null,
+      apiKey: client.apiKey,
+      clientCode: client.clientCode,
+    },
+    session: login.session,
+  };
+}
+
+// Master strikes are stored scaled. MCX commodities are consistently ×100;
+// NSE/BSE index options only over-scale on some rows (>200000), so keep the
+// original heuristic there.
+function normalizeStrike(rawStrike, exchange) {
+  if (exchange === 'MCX') return Math.trunc(rawStrike / 100);
+  return rawStrike > 200000 ? Math.trunc(rawStrike / 100) : Math.trunc(rawStrike);
+}
+
+function findStrikeByToken(map, token) {
+  for (const [strike, value] of map.entries()) {
+    if (value === token) return strike;
+  }
+  return null;
 }
 
 async function trySessionRms(client, headers, session) {
@@ -237,6 +711,112 @@ function smartHeaders(apiKey) {
   };
 }
 
+function authHeaders(headers, jwtToken) {
+  return {
+    ...headers,
+    Authorization: `Bearer ${jwtToken}`,
+  };
+}
+
+// Ensure the cache is populated and fresh (≤ 1 day old). Loads the parsed
+// master once and reuses it; concurrent callers share a single load.
+async function ensureMaster() {
+  const fresh = masterCache.data && (Date.now() - masterCache.loadedAt) < MASTER_TTL_MS;
+  if (fresh) return masterCache;
+  if (masterLoading) return masterLoading;
+
+  masterLoading = (async () => {
+    // Prefer the on-disk slim files; only re-download from Angel when missing
+    // or older than a day.
+    try {
+      const stat = await fs.stat(MASTER_FILE);
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs < MASTER_TTL_MS) {
+        const [rawMaster, rawIndex] = await Promise.all([
+          fs.readFile(MASTER_FILE, 'utf8'),
+          fs.readFile(INDEX_FILE, 'utf8'),
+        ]);
+        masterCache.data = JSON.parse(rawMaster);
+        masterCache.index = JSON.parse(rawIndex);
+        masterCache.loadedAt = Date.now();
+        if (FEED_DEBUG) console.log(`[master] loaded from disk: ${masterCache.data.length} tokens`);
+        return masterCache;
+      }
+    } catch {
+      // no usable disk cache — fall through to a network refresh
+    }
+    await refreshMaster();
+    return masterCache;
+  })();
+
+  try {
+    return await masterLoading;
+  } finally {
+    masterLoading = null;
+  }
+}
+
+async function getMasterIndex() {
+  return (await ensureMaster()).index;
+}
+
+async function getMasterData() {
+  return (await ensureMaster()).data;
+}
+
+async function refreshMaster() {
+  const response = await fetch(MASTER_URL);
+  if (!response.ok) throw new Error(`Master download failed: HTTP ${response.status}`);
+
+  const data = await response.json();
+  const neededSpotSymbols = new Set(['Nifty 50', 'Nifty Bank', 'Nifty Fin Service', 'Nifty Mid Select', 'SENSEX']);
+  const slimData = [];
+  const dropdownIndex = {};
+
+  for (const row of data) {
+    const seg = row.exch_seg;
+    const name = row.name || '';
+    const isDerivative = seg === 'NFO' || seg === 'BFO' || seg === 'MCX';
+    const isNeededSpot = (seg === 'NSE' || seg === 'BSE') && neededSpotSymbols.has(name);
+
+    if (!isDerivative && !isNeededSpot) continue;
+
+    slimData.push({
+      t: String(row.token),
+      s: String(row.symbol),
+      n: String(name),
+      e: String(row.expiry || '').toUpperCase(),
+      k: Number(row.strike || 0),
+      g: seg,
+    });
+
+    if (isDerivative && row.expiry) {
+      dropdownIndex[name] ||= [];
+      dropdownIndex[name].push(String(row.expiry).toUpperCase());
+    }
+  }
+
+  for (const [name, expiries] of Object.entries(dropdownIndex)) {
+    dropdownIndex[name] = [...new Set(expiries)].sort((a, b) => Date.parse(a) - Date.parse(b));
+  }
+
+  await fs.writeFile(MASTER_FILE, JSON.stringify(slimData));
+  await fs.writeFile(INDEX_FILE, JSON.stringify(dropdownIndex));
+
+  // Update the in-memory cache so the fresh data is served immediately.
+  masterCache.data = slimData;
+  masterCache.index = dropdownIndex;
+  masterCache.loadedAt = Date.now();
+
+  return {
+    status: true,
+    masterSizeKb: Math.round(JSON.stringify(slimData).length / 1024),
+    indexSizeKb: Math.round(JSON.stringify(dropdownIndex).length / 1024),
+    symbolCount: Object.keys(dropdownIndex).length,
+    totalTokens: slimData.length,
+  };
+}
+
 function generateTotp(secret) {
   const key = base32Decode(secret.replace(/\s+/g, '').toUpperCase());
   const counter = Math.floor(Date.now() / 1000 / 30);
@@ -303,19 +883,32 @@ function readJson(req) {
 
 async function serveStatic(req, res) {
   const urlPath = req.url === '/' ? '/index.html' : req.url;
-  const requested = path.normalize(path.join(ROOT, decodeURIComponent(urlPath)));
+  const cleanPath = decodeURIComponent(urlPath.split('?')[0]);
+  const requested = path.normalize(path.join(STATIC_ROOT, cleanPath));
 
-  if (!requested.startsWith(ROOT) || path.basename(requested) === 'sessions.json') {
+  if (!requested.startsWith(STATIC_ROOT) || path.basename(requested) === 'sessions.json') {
     sendJson(res, 403, { status: false, message: 'Forbidden' });
     return;
   }
 
-  const content = await fs.readFile(requested);
-  const ext = path.extname(requested);
+  let filePath = requested;
+  let content;
+  try {
+    content = await fs.readFile(filePath);
+  } catch {
+    filePath = path.join(STATIC_ROOT, 'index.html');
+    content = await fs.readFile(filePath);
+  }
+
+  const ext = path.extname(filePath);
   const type = {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.ico': 'image/x-icon',
   }[ext] || 'application/octet-stream';
 
   sendCors(res, 200, type);
