@@ -1283,7 +1283,29 @@ select { min-width: 96px; }
   width: 100%; height: var(--ctl); padding: 0 8px; border: 1px solid var(--ao-border); border-radius: 6px;
   background: var(--ao-surface); font-size: var(--fs-sm); color: var(--ao-base); white-space: nowrap; cursor: pointer;
 }
+.basket-field:hover { border-color: var(--ao-blue); }
+.basket-field:disabled { opacity: .6; cursor: wait; }
+.basket-field.has-error { border-color: var(--ao-red); color: var(--ao-red); }
 .basket-field .chev { color: var(--ao-caption); font-size: 9px; }
+
+/* Expiry dropdown */
+.basket-expiry { position: relative; width: 100%; }
+.basket-expiry.open .basket-field { border-color: var(--ao-blue); box-shadow: 0 0 0 3px var(--ao-blue-surface); }
+/* Portalled to <body>, so position comes from inline fixed coords. High z-index
+   keeps it above the panel; overflow:hidden parents can no longer clip it. */
+.basket-expiry-menu {
+  z-index: 1000;
+  max-height: 240px; overflow-y: auto; padding: 4px;
+  background: var(--ao-surface); border: 1px solid var(--ao-border); border-radius: 8px;
+  box-shadow: var(--color-overlap-shadow, 0 4px 24px rgba(0, 0, 0, .18)); list-style: none; margin: 0;
+}
+.basket-expiry-option {
+  padding: 6px 10px; border-radius: 6px; font-size: var(--fs-sm); color: var(--ao-base);
+  cursor: pointer; white-space: nowrap;
+}
+.basket-expiry-option:hover { background: var(--ao-surface-2); }
+.basket-expiry-option.active { background: var(--ao-blue-bg); color: var(--ao-blue); font-weight: 700; }
+.basket-expiry-empty { padding: 8px 10px; font-size: var(--fs-xs); color: var(--ao-placeholder); }
 .basket-stepper {
   display: inline-flex; align-items: stretch; width: 100%; height: var(--ctl);
   border: 1px solid var(--ao-border); border-radius: 6px; background: var(--ao-surface); overflow: hidden;

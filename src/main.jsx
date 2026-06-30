@@ -357,8 +357,15 @@ function Strategies({ clients, demoMode, onClientSession }) {
   // Which logged-in client (with its session) the margin/charges calculators
   // should use — the same account that loaded the option chain.
   const [marginClient, setMarginClient] = useState(null);
+  // Always-current mirror of the logged-in client so async callbacks (resolve)
+  // never read a stale session from a captured closure.
+  const marginClientRef = useRef(null);
+  marginClientRef.current = marginClient;
   const [margin, setMargin] = useState({ status: 'idle', value: 0, message: '' });
   const [charges, setCharges] = useState({ status: 'idle', value: 0, message: '' });
+  // symbol -> [expiries], shared from the option chain so the basket's expiry
+  // dropdown can list the alternatives for each leg.
+  const [expiryIndex, setExpiryIndex] = useState({});
   const legSeq = useRef(0);
 
   const addLeg = useCallback((leg) => {
@@ -368,6 +375,138 @@ function Strategies({ clients, demoMode, onClientSession }) {
   const updateLeg = useCallback((id, patch) => {
     setLegs((current) => current.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
   }, []);
+
+  // Per-leg monotonic request id, so only the LATEST resolve for a leg applies
+  // its result (discards stale/overlapping responses).
+  const resolveSeq = useRef({});
+  // Cache of full option chains keyed by "SYMBOL|EXPIRY". Changing a leg's
+  // expiry loads that expiry's chain once (in the background); strike changes
+  // then read the LTP/token straight from the cache — instant, no per-strike
+  // backend call, no races.
+  const chainCache = useRef({});
+
+  // Pull a strike's contract (token, ltp, lotSize, etc.) out of a cached chain.
+  const lookupFromChain = (chain, strike, optionType) => {
+    if (!chain?.strikes?.length) return null;
+    const want = Number(strike) || 0;
+    // exact strike, else nearest available in this chain window
+    let idx = chain.strikes.indexOf(want);
+    if (idx < 0) {
+      idx = chain.strikes.reduce((best, s, i) =>
+        Math.abs(s - want) < Math.abs(chain.strikes[best] - want) ? i : best, 0);
+    }
+    const isCall = String(optionType).toUpperCase() !== 'PE';
+    const ltp = (isCall ? chain.callLtp : chain.putLtp)?.[idx];
+    const close = (isCall ? chain.callClose : chain.putClose)?.[idx];
+    const token = (isCall ? chain.callTokens : chain.putTokens)?.[idx] || null;
+    const tradingSymbol = (isCall ? chain.callSymbols : chain.putSymbols)?.[idx] || null;
+    const changePct = (ltp && close) ? Number((((ltp - close) / close) * 100).toFixed(2)) : null;
+    return {
+      strike: chain.strikes[idx],
+      ltp: ltp ?? null,
+      changePct,
+      token,
+      tradingSymbol,
+      exchange: chain.exchange,
+      lotSize: chain.lotSize || 1,
+    };
+  };
+
+  // Fetch (and cache) the full option chain for a symbol+expiry. Reused across
+  // strike changes so the LTP for any strike of that expiry is already local.
+  const loadExpiryChain = useCallback(async (symbol, expiry) => {
+    const key = `${symbol}|${expiry}`;
+    if (chainCache.current[key]) return chainCache.current[key];
+    const liveClient = marginClientRef.current;
+    if (!liveClient?.session?.jwtToken) return null;
+    const res = await fetch('/api/angel/option-chain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client: liveClient, symbol, expiry, window: 30 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.status === false) throw new Error(body.message || 'Chain load failed');
+    chainCache.current[key] = body;
+    return body;
+  }, []);
+
+  // Re-resolve a leg when a contract-defining field changes (strike/expiry/side).
+  // Strategy: on expiry change, background-load that expiry's full chain; then
+  // read the new strike's LTP + token from that cached chain. Strike/side changes
+  // are then instant local lookups. Falls back to /resolve-leg if uncached.
+  const resolveLegContract = useCallback(async (id, changes = {}) => {
+    let target = null;
+    setLegs((current) => {
+      const found = current.find((leg) => leg.id === id);
+      if (found) target = { ...found, ...changes };
+      return current.map((leg) => (leg.id === id ? { ...leg, ...changes, resolving: true } : leg));
+    });
+    if (!target) return;
+
+    const seq = (resolveSeq.current[id] || 0) + 1;
+    resolveSeq.current[id] = seq;
+    const isLatest = () => resolveSeq.current[id] === seq;
+    const finish = (patch) => {
+      if (!isLatest()) return;
+      setLegs((current) => current.map((leg) => (leg.id === id ? { ...leg, ...patch, resolving: false } : leg)));
+    };
+
+    try {
+      const key = `${target.symbol}|${target.expiry}`;
+      let chain = chainCache.current[key];
+      // Need the chain when switching expiry (or when this expiry isn't cached).
+      if (!chain) chain = await loadExpiryChain(target.symbol, target.expiry);
+
+      const hit = chain && lookupFromChain(chain, target.strike, target.optionType);
+      if (hit && hit.token) {
+        finish({
+          expiry: target.expiry,
+          strike: hit.strike,
+          optionType: target.optionType,
+          token: hit.token,
+          tradingSymbol: hit.tradingSymbol,
+          exchange: hit.exchange,
+          lotSize: hit.lotSize,
+          ltp: hit.ltp,
+          changePct: hit.changePct,
+          resolveError: null,
+        });
+        return;
+      }
+
+      // Fallback: strike outside the cached window (or no chain) — resolve the
+      // single contract directly.
+      const liveClient = marginClientRef.current;
+      const res = await fetch('/api/angel/resolve-leg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client: liveClient || null,
+          symbol: target.symbol,
+          expiry: target.expiry,
+          strike: Number(target.strike) || 0,
+          optionType: target.optionType,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.status === false) throw new Error(body.message || 'Contract not found');
+      finish({
+        expiry: body.expiry || target.expiry,
+        strike: body.strike ?? target.strike,
+        optionType: body.optionType || target.optionType,
+        token: body.token ?? target.token,
+        tradingSymbol: body.tradingSymbol ?? target.tradingSymbol,
+        exchange: body.exchange || target.exchange,
+        lotSize: body.lotSize || target.lotSize,
+        ltp: body.ltp ?? null,
+        changePct: body.changePct ?? null,
+        resolveError: body.quoteError || null,
+      });
+    } catch (error) {
+      console.error('resolve-leg failed:', error);
+      finish({ resolveError: error.message || 'Contract not found' });
+    }
+  }, [loadExpiryChain]);
 
   const removeLeg = useCallback((id) => {
     setLegs((current) => current.filter((leg) => leg.id !== id));
@@ -472,13 +611,16 @@ function Strategies({ clients, demoMode, onClientSession }) {
         onClientSession={onClientSession}
         onAddLeg={addLeg}
         onMarginContext={setMarginClient}
+        onExpiryIndex={setExpiryIndex}
       />
       <Basket
         legs={legs}
         name="MY BASKET"
         margin={margin}
         charges={charges}
+        expiryIndex={expiryIndex}
         onUpdateLeg={updateLeg}
+        onResolveLeg={resolveLegContract}
         onRemoveLeg={removeLeg}
         onClear={clearLegs}
         onClose={clearLegs}
@@ -487,7 +629,7 @@ function Strategies({ clients, demoMode, onClientSession }) {
   );
 }
 
-function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarginContext }) {
+function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarginContext, onExpiryIndex }) {
   const [chainIndex, setChainIndex] = useState({});
   const [clientIndex, setClientIndex] = useState(0);
   const [symbol, setSymbol] = useState('');
@@ -563,6 +705,7 @@ function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarg
       const response = await fetch('/api/angel/master-index');
       const body = await response.json();
       setChainIndex(body);
+      onExpiryIndex?.(body); // share symbol→expiries with the basket
       setStatus('Master ready');
     } catch (error) {
       setStatus(error.message || 'Master load failed');
@@ -964,13 +1107,12 @@ const ChainRow = React.memo(function ChainRow({
 // (side/strike/token/onTrade) so live ticks never re-render the buttons — the
 // streaming ltp/chg are mirrored into refs and only read at click time, so they
 // don't count toward the memo's shallow compare.
+// Default React.memo (shallow compare): the buttons re-render when ltp/chg
+// change so a click always captures the CURRENT live price for the basket leg.
+// These are two tiny buttons, so per-tick re-rendering is cheap.
 const TradeActions = React.memo(function TradeActions({ side, strike, token, symbol, ltp, chg, onTrade }) {
   const label = side === 'call' ? 'Call' : 'Put';
   const disabled = !token;
-  const ltpRef = useRef(ltp);
-  const chgRef = useRef(chg);
-  ltpRef.current = ltp;
-  chgRef.current = chg;
   return (
     <div className="trade-actions" role="group" aria-label={`${label} actions`}>
       <button
@@ -978,25 +1120,18 @@ const TradeActions = React.memo(function TradeActions({ side, strike, token, sym
         type="button"
         title={`Buy ${label} ${strike}`}
         disabled={disabled}
-        onClick={() => onTrade?.(side, 'BUY', strike, token, ltpRef.current, chgRef.current, symbol)}
+        onClick={() => onTrade?.(side, 'BUY', strike, token, ltp, chg, symbol)}
       >B</button>
       <button
         className="trade-btn sell"
         type="button"
         title={`Sell ${label} ${strike}`}
         disabled={disabled}
-        onClick={() => onTrade?.(side, 'SELL', strike, token, ltpRef.current, chgRef.current, symbol)}
+        onClick={() => onTrade?.(side, 'SELL', strike, token, ltp, chg, symbol)}
       >S</button>
     </div>
   );
-}, (prev, next) =>
-  // Custom comparator: ignore ltp/chg (read via refs at click), so the buttons
-  // only re-render when their stable identity props actually change.
-  prev.side === next.side &&
-  prev.symbol === next.symbol &&
-  prev.strike === next.strike &&
-  prev.token === next.token &&
-  prev.onTrade === next.onTrade);
+});
 
 function closeStream(ref) {
   if (ref.current) {

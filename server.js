@@ -194,6 +194,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/api/angel/resolve-leg') {
+      const body = await readJson(req);
+      const result = await resolveLeg(body);
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'GET' && req.url === '/api/angel/stream') {
       handleStream(req, res);
       return;
@@ -539,6 +546,109 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
       clientCode: client.clientCode,
     },
     session: login.session,
+  };
+}
+
+// Resolve one option leg's contract for a (symbol, expiry, strike, optionType)
+// from the scrip master — returns its token, tradingsymbol, exchange and lot
+// size. Used when the basket changes a leg's expiry, so the leg points at the
+// correct new contract (and margin/charges stay accurate).
+async function resolveLeg({ client = {}, symbol = '', expiry = '', strike, optionType = 'CE' } = {}) {
+  const upperSymbol = String(symbol).toUpperCase();
+  const upperExpiry = String(expiry).toUpperCase();
+  const side = String(optionType).toUpperCase().endsWith('PE') ? 'PE' : 'CE';
+  const wantStrike = Math.trunc(Number(strike) || 0);
+  if (!upperSymbol || !upperExpiry || !wantStrike) {
+    throw new Error('symbol, expiry and strike are required');
+  }
+
+  const exchange = upperSymbol === 'SENSEX'
+    ? 'BFO'
+    : MCX_SYMBOLS.has(upperSymbol)
+      ? 'MCX'
+      : 'NFO';
+
+  // Collect every available strike for this expiry+side, then take the exact
+  // match — or snap to the NEAREST one. Strike steps differ across expiries and
+  // symbols, so an arrow-step (+50) may land off-grid; snapping avoids a hard
+  // failure and mirrors how the real basket behaves.
+  const master = await getMasterData();
+  const candidates = []; // { strike, token, tradingSymbol, lotSize }
+  for (const row of master) {
+    if (row.n !== upperSymbol || row.g !== exchange || row.e !== upperExpiry) continue;
+    const rowSymbol = String(row.s);
+    if (!rowSymbol.endsWith(side)) continue;
+    candidates.push({
+      strike: normalizeStrike(Number(row.k || 0), exchange),
+      token: String(row.t),
+      tradingSymbol: rowSymbol,
+      lotSize: Number(row.l) || 1,
+    });
+  }
+
+  if (!candidates.length) {
+    throw new Error(`No ${side} contracts for ${upperSymbol} ${upperExpiry}`);
+  }
+
+  let found = candidates.find((c) => c.strike === wantStrike);
+  let snappedStrike = wantStrike;
+  if (!found) {
+    // nearest available strike to the requested one
+    found = candidates.reduce((best, c) =>
+      Math.abs(c.strike - wantStrike) < Math.abs(best.strike - wantStrike) ? c : best);
+    snappedStrike = found.strike;
+  }
+
+  // Fetch the live LTP/close for the new contract so the basket row refreshes
+  // its price + change% on expiry change. Best-effort: if the session is
+  // missing or the quote fails (e.g. market closed), we still return the
+  // resolved contract with ltp = null.
+  let ltp = null;
+  let close = null;
+  let quoteError = null;
+  const session = resolveSession(client);
+  const jwtToken = session?.jwtToken;
+  if (!jwtToken) {
+    quoteError = 'no session (log in to fetch price)';
+  } else {
+    try {
+      const headers = smartHeaders(client.apiKey);
+      const quote = await smartFetch('/rest/secure/angelbroking/market/v1/quote', {
+        method: 'POST',
+        headers: authHeaders(headers, jwtToken),
+        body: { mode: 'FULL', exchangeTokens: { [exchange]: [found.token] } },
+      });
+      const row = quote.data?.fetched?.[0];
+      if (row) {
+        // After hours ltp may be 0 — fall back to the day's close so the row
+        // still shows a real number for the new contract.
+        const rawLtp = Number(row.ltp ?? row.lastTradePrice ?? 0);
+        close = Number(row.close ?? row.previousClose ?? 0) || null;
+        ltp = rawLtp || close || 0;
+      } else {
+        quoteError = quote.message || 'quote returned no rows';
+      }
+      if (FEED_DEBUG) console.log(`[resolve] ${found.tradingSymbol} token=${found.token} ltp=${ltp} close=${close}`);
+    } catch (error) {
+      quoteError = error.message || 'quote failed';
+    }
+  }
+
+  const changePct = (ltp && close) ? Number((((ltp - close) / close) * 100).toFixed(2)) : null;
+
+  return {
+    status: true,
+    token: found.token,
+    tradingSymbol: found.tradingSymbol,
+    exchange,
+    lotSize: found.lotSize,
+    strike: snappedStrike, // the actual available strike (snapped if off-grid)
+    expiry: upperExpiry,
+    optionType: side,
+    ltp,
+    close,
+    changePct,
+    quoteError,
   };
 }
 

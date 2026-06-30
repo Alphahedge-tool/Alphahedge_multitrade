@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, Minus, X, Link2, Copy, Trash2, Pencil, Info, Eye, Bookmark, BarChart3 } from 'lucide-react';
 
 // Basket panel — collects option legs the user clicks (Buy/Sell) from the
@@ -19,8 +20,10 @@ export default function Basket({
   maxOrders = 50,
   margin = { status: 'idle', value: 0, message: '' },
   charges = { status: 'idle', value: 0, message: '' },
+  expiryIndex = {},
   onRemoveLeg,
   onUpdateLeg,
+  onResolveLeg,
   onClear,
   onClose,
 }) {
@@ -107,7 +110,14 @@ export default function Basket({
       {/* ── Leg rows ── */}
       <div className="basket-rows">
         {legs.map((leg) => (
-          <BasketRow key={leg.id} leg={leg} onRemoveLeg={onRemoveLeg} onUpdateLeg={onUpdateLeg} />
+          <BasketRow
+            key={leg.id}
+            leg={leg}
+            expiries={expiryIndex[leg.symbol] || []}
+            onRemoveLeg={onRemoveLeg}
+            onUpdateLeg={onUpdateLeg}
+            onResolveLeg={onResolveLeg}
+          />
         ))}
         {!legs.length && (
           <div className="basket-empty">
@@ -184,7 +194,7 @@ export default function Basket({
 // A single leg row. Mirrors the screenshot columns: select, stock+LTP, action
 // (B/S pill), expiry, strike, CE/PE, product, quantity stepper, price + a
 // LIMIT/MARKET toggle.
-function BasketRow({ leg, onRemoveLeg, onUpdateLeg }) {
+function BasketRow({ leg, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg }) {
   const isSell = leg.action === 'SELL';
   const isMarket = leg.priceType !== 'LIMIT';
   const chg = Number(leg.changePct);
@@ -232,18 +242,43 @@ function BasketRow({ leg, onRemoveLeg, onUpdateLeg }) {
       </span>
 
       <span className="bc-expiry">
-        <span className="basket-field" title="Expiry">
-          {formatExpiry(leg.expiry)}
-          <span className="chev">▼</span>
-        </span>
+        <ExpiryDropdown
+          value={leg.expiry}
+          expiries={expiries}
+          loading={leg.resolving}
+          error={leg.resolveError}
+          onChange={(next) => onResolveLeg?.(leg.id, { expiry: next })}
+        />
       </span>
 
       <span className="bc-strike">
         <span className="basket-stepper">
-          <input type="number" value={leg.strike ?? ''} onChange={(event) => onUpdateLeg?.(leg.id, { strike: event.target.value })} />
+          {/* Type freely (local update); commit + re-resolve the contract on
+              Enter/blur, only if the value actually changed. Arrows step by 50
+              and re-resolve immediately; onMouseDown preventDefault stops the
+              click from blurring the input (which would fire a second resolve
+              back to the old strike and race the first). */}
+          <input
+            type="number"
+            value={leg.strike ?? ''}
+            onChange={(event) => onUpdateLeg?.(leg.id, { strike: event.target.value })}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.target.blur(); } }}
+            onBlur={(event) => {
+              const next = Math.max(0, Number(event.target.value) || 0);
+              if (next && next !== Number(leg.strike)) onResolveLeg?.(leg.id, { strike: next });
+            }}
+          />
           <span className="basket-stepper-arrows">
-            <button type="button" tabIndex={-1} title="Increase strike" onClick={() => onUpdateLeg?.(leg.id, { strike: (Number(leg.strike) || 0) + 50 })}>▲</button>
-            <button type="button" tabIndex={-1} title="Decrease strike" onClick={() => onUpdateLeg?.(leg.id, { strike: Math.max(0, (Number(leg.strike) || 0) - 50) })}>▼</button>
+            <button
+              type="button" tabIndex={-1} title="Increase strike"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onResolveLeg?.(leg.id, { strike: (Number(leg.strike) || 0) + 50 })}
+            >▲</button>
+            <button
+              type="button" tabIndex={-1} title="Decrease strike"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onResolveLeg?.(leg.id, { strike: Math.max(0, (Number(leg.strike) || 0) - 50) })}
+            >▼</button>
           </span>
         </span>
       </span>
@@ -253,7 +288,7 @@ function BasketRow({ leg, onRemoveLeg, onUpdateLeg }) {
           type="button"
           className={`basket-cepe-pill ${leg.optionType === 'PE' ? 'pe' : 'ce'}`}
           title="Toggle CE/PE"
-          onClick={() => onUpdateLeg?.(leg.id, { optionType: leg.optionType === 'PE' ? 'CE' : 'PE' })}
+          onClick={() => onResolveLeg?.(leg.id, { optionType: leg.optionType === 'PE' ? 'CE' : 'PE' })}
         >
           {leg.optionType || 'CE'}
         </button>
@@ -315,6 +350,91 @@ function BasketRow({ leg, onRemoveLeg, onUpdateLeg }) {
   );
 }
 
+// Expiry dropdown for a basket leg. Lists the symbol's available expiries
+// (from the shared master index) and re-resolves the leg's contract on change.
+// The menu is portalled to <body> with fixed positioning so it can't be clipped
+// by the basket panel's / rows' overflow:hidden.
+function ExpiryDropdown({ value, expiries = [], loading, error, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+
+  // Position the portalled menu under the trigger (fixed coords from its rect).
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    setRect(triggerRef.current.getBoundingClientRect());
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDocClick = (event) => {
+      if (triggerRef.current?.contains(event.target)) return;
+      if (menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const onKey = (event) => { if (event.key === 'Escape') setOpen(false); };
+    // Close on scroll/resize since the fixed menu would otherwise detach.
+    const onScrollResize = () => setOpen(false);
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', onScrollResize, true);
+    window.addEventListener('resize', onScrollResize);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', onScrollResize, true);
+      window.removeEventListener('resize', onScrollResize);
+    };
+  }, [open]);
+
+  // Sort expiries chronologically so the menu reads in date order.
+  const sorted = [...expiries].sort((a, b) => Date.parse(a) - Date.parse(b));
+
+  function pick(expiry) {
+    setOpen(false);
+    if (expiry !== value) onChange?.(expiry);
+  }
+
+  return (
+    <div className={`basket-expiry${open ? ' open' : ''}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`basket-field${error ? ' has-error' : ''}`}
+        title={error || 'Change expiry'}
+        disabled={loading}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span>{loading ? '…' : formatExpiry(value)}</span>
+        <span className="chev">▼</span>
+      </button>
+      {open && rect && createPortal(
+        <ul
+          ref={menuRef}
+          className="basket-expiry-menu"
+          role="listbox"
+          style={{ position: 'fixed', top: rect.bottom + 4, left: rect.left, minWidth: rect.width }}
+        >
+          {sorted.length === 0 && <li className="basket-expiry-empty">No expiries loaded</li>}
+          {sorted.map((expiry) => (
+            <li
+              key={expiry}
+              role="option"
+              aria-selected={expiry === value}
+              className={`basket-expiry-option${expiry === value ? ' active' : ''}`}
+              onClick={() => pick(expiry)}
+            >
+              {formatExpiry(expiry)}
+            </li>
+          ))}
+        </ul>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 // Charges breakdown popover (shown on hovering the ⓘ next to Total Charges).
 // Mirrors Angel's basket: top-level groups (Angel One Brokerage, External
 // Charges, Taxes) are bold with their amount; each group's leaf items are
@@ -367,8 +487,9 @@ function marginClass(status) {
 }
 
 function formatLtp(value) {
+  if (value == null) return '—';
   const n = Number(value);
-  return Number.isFinite(n) && n ? n.toFixed(2) : '0.00';
+  return Number.isFinite(n) && n ? n.toFixed(2) : '—';
 }
 
 function formatNum(value) {
