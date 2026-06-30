@@ -180,6 +180,20 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/api/angel/margin') {
+      const body = await readJson(req);
+      const result = await getMargin(body);
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/angel/charges') {
+      const body = await readJson(req);
+      const result = await getCharges(body);
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'GET' && req.url === '/api/angel/stream') {
       handleStream(req, res);
       return;
@@ -319,6 +333,9 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
 
   const ceTokens = new Map();
   const peTokens = new Map();
+  const ceSymbols = new Map(); // strike -> tradingsymbol (for charges)
+  const peSymbols = new Map();
+  let lotSize = 1; // units per lot — needed for realistic margin/charges
   // Pick the F&O segment the symbol's contracts live in.
   const exchange = upperSymbol === 'SENSEX'
     ? 'BFO'
@@ -337,8 +354,9 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
     }
     if (row.e !== upperExpiry) continue;
     const strike = normalizeStrike(Number(row.k || 0), exchange);
-    if (symbol.endsWith('CE')) ceTokens.set(strike, String(row.t));
-    if (symbol.endsWith('PE')) peTokens.set(strike, String(row.t));
+    if (Number(row.l) > 0) lotSize = Number(row.l); // same lot size for all strikes of an expiry
+    if (symbol.endsWith('CE')) { ceTokens.set(strike, String(row.t)); ceSymbols.set(strike, symbol); }
+    if (symbol.endsWith('PE')) { peTokens.set(strike, String(row.t)); peSymbols.set(strike, symbol); }
   }
 
   // Nearest future on/after the option expiry, else the earliest available.
@@ -381,14 +399,19 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
   const finalStrikes = strikes.slice(Math.max(0, atmIndex - sideWindow), atmIndex + sideWindow + 1);
   const tokensForLive = [];
   // Per-strike token arrays (aligned with finalStrikes) so the live feed can
-  // map an incoming tick's token back to its row + call/put side.
+  // map an incoming tick's token back to its row + call/put side. Symbol arrays
+  // ride along so a basket leg can carry its tradingsymbol for charge estimates.
   const callTokens = [];
   const putTokens = [];
+  const callSymbols = [];
+  const putSymbols = [];
   for (const strike of finalStrikes) {
     const ce = ceTokens.get(strike) || null;
     const pe = peTokens.get(strike) || null;
     callTokens.push(ce);
     putTokens.push(pe);
+    callSymbols.push(ceSymbols.get(strike) || null);
+    putSymbols.push(peSymbols.get(strike) || null);
     if (ce) tokensForLive.push(ce);
     if (pe) tokensForLive.push(pe);
   }
@@ -501,8 +524,11 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
     manipulatedPutOI: exposurePut,
     // Live-feed wiring for the browser:
     exchange,
+    lotSize,
     callTokens,
     putTokens,
+    callSymbols,
+    putSymbols,
     liveTokens: tokensForLive,
     spotToken,
     spotExchange,
@@ -514,6 +540,163 @@ async function getOptionChain({ client = {}, symbol = 'NIFTY', expiry = '', wind
     },
     session: login.session,
   };
+}
+
+// Real basket margin via Angel's batch margin calculator. Maps each basket
+// leg → an Angel position { exchange, token, qty, price, productType, tradeType }
+// and returns the netted totalMarginRequired for the whole basket (Angel applies
+// spread/offset benefits across the legs). Up to 50 positions per call.
+//
+// Body: { client, legs:[{ token, exchange, qty, price, tradeType, productType }] }
+async function getMargin({ client = {}, legs = [] } = {}) {
+  const positions = (legs || [])
+    .filter((leg) => leg && leg.token)
+    .slice(0, 50)
+    .map((leg) => ({
+      exchange: String(leg.exchange || 'NFO'),
+      // The basket shows quantity in LOTS; Angel's margin API expects UNITS, so
+      // multiply by the contract's lot size (defaults to 1 for cash/unknown).
+      qty: Math.max(0, Math.trunc((Number(leg.qty) || 0) * (Number(leg.lotSize) || 1))),
+      price: Number(leg.price) || 0,
+      productType: mapProductType(leg.productType),
+      token: String(leg.token),
+      tradeType: String(leg.tradeType || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+      // Angel's batch endpoint requires an order type per position ("Order type
+      // is required" otherwise). LIMIT when a price is given, else MARKET.
+      orderType: String(leg.orderType || '').toUpperCase() === 'LIMIT' ? 'LIMIT' : 'MARKET',
+    }))
+    .filter((position) => position.qty > 0);
+
+  if (!positions.length) {
+    return { status: true, totalMarginRequired: 0, marginComponents: null, empty: true };
+  }
+
+  // Reuse the client's JWT (same account that drives the chain); re-login once
+  // if it's missing or the batch call rejects a stale token.
+  let session = resolveSession(client);
+  let jwtToken = session?.jwtToken;
+  if (!jwtToken) {
+    const login = await autoLogin(client);
+    session = login.session;
+    jwtToken = session?.jwtToken;
+  }
+  if (!jwtToken) throw new Error('Angel session unavailable for margin');
+
+  const headers = smartHeaders(client.apiKey);
+  const callBatch = (token) => smartFetch('/rest/secure/angelbroking/margin/v1/batch', {
+    method: 'POST',
+    headers: authHeaders(headers, token),
+    body: { positions },
+  });
+
+  let result;
+  try {
+    result = await callBatch(jwtToken);
+  } catch (error) {
+    const relogin = await autoLogin({ ...client, session: null });
+    jwtToken = relogin.session?.jwtToken;
+    if (!jwtToken) throw error;
+    session = relogin.session;
+    result = await callBatch(jwtToken);
+  }
+
+  const data = result.data || {};
+  return {
+    status: true,
+    totalMarginRequired: Number(data.totalMarginRequired || 0),
+    marginComponents: data.marginComponents || null,
+    positionCount: positions.length,
+    session,
+  };
+}
+
+// Real brokerage + statutory charges via Angel's estimateCharges calculator.
+// Each leg → an order { product_type, transaction_type, quantity, price,
+// exchange, symbol_name, token }. Angel is picky: quantity and price must be
+// STRINGS, and price must be an INTEGER string ("600", not "600.00") or it
+// returns AB2001. Total is read from data.summary.total_charges.
+//
+// Body: { client, legs:[{ token, symbol, exchange, qty, lotSize, price, tradeType, productType }] }
+async function getCharges({ client = {}, legs = [] } = {}) {
+  const orders = (legs || [])
+    .filter((leg) => leg && leg.token && leg.symbol)
+    .slice(0, 50)
+    .map((leg) => {
+      const units = Math.max(0, Math.trunc((Number(leg.qty) || 0) * (Number(leg.lotSize) || 1)));
+      return {
+        product_type: mapChargeProduct(leg.productType, leg.exchange),
+        transaction_type: String(leg.tradeType || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+        quantity: String(units),
+        price: String(Math.max(0, Math.round(Number(leg.price) || 0))), // integer string
+        exchange: String(leg.exchange || 'NFO'),
+        symbol_name: String(leg.symbol),
+        token: String(leg.token),
+        _units: units,
+      };
+    })
+    .filter((order) => order._units > 0)
+    .map(({ _units, ...order }) => order);
+
+  if (!orders.length) {
+    return { status: true, totalCharges: 0, breakup: null, empty: true };
+  }
+
+  let session = resolveSession(client);
+  let jwtToken = session?.jwtToken;
+  if (!jwtToken) {
+    const login = await autoLogin(client);
+    session = login.session;
+    jwtToken = session?.jwtToken;
+  }
+  if (!jwtToken) throw new Error('Angel session unavailable for charges');
+
+  const headers = smartHeaders(client.apiKey);
+  const callCharges = (token) => smartFetch('/rest/secure/angelbroking/brokerage/v1/estimateCharges', {
+    method: 'POST',
+    headers: authHeaders(headers, token),
+    body: { orders },
+  });
+
+  let result;
+  try {
+    result = await callCharges(jwtToken);
+  } catch (error) {
+    const relogin = await autoLogin({ ...client, session: null });
+    jwtToken = relogin.session?.jwtToken;
+    if (!jwtToken) throw error;
+    session = relogin.session;
+    result = await callCharges(jwtToken);
+  }
+
+  const summary = result.data?.summary || {};
+  return {
+    status: true,
+    totalCharges: Number(summary.total_charges || 0),
+    breakup: summary.breakup || result.data?.charges || null,
+    orderCount: orders.length,
+    session,
+  };
+}
+
+// estimateCharges product_type enum. Options/futures carry forward → CARRYFORWARD;
+// intraday → INTRADAY. Cash buys default to DELIVERY.
+function mapChargeProduct(value, exchange) {
+  const v = String(value || 'CF').toUpperCase();
+  if (v === 'MIS' || v === 'INTRADAY') return 'INTRADAY';
+  const derivative = ['NFO', 'BFO', 'MCX', 'CDS'].includes(String(exchange || '').toUpperCase());
+  if (v === 'CF' || v === 'NRML' || v === 'CARRYFORWARD') return derivative ? 'CARRYFORWARD' : 'DELIVERY';
+  if (v === 'DELIVERY' || v === 'CNC') return 'DELIVERY';
+  return derivative ? 'CARRYFORWARD' : 'DELIVERY';
+}
+
+// Basket products → Angel margin productType enum. The basket uses CF (carry
+// forward) and MIS (intraday); Angel expects CARRYFORWARD / INTRADAY.
+function mapProductType(value) {
+  const v = String(value || 'CF').toUpperCase();
+  if (v === 'MIS' || v === 'INTRADAY') return 'INTRADAY';
+  if (v === 'DELIVERY' || v === 'CNC') return 'DELIVERY';
+  if (v === 'MARGIN') return 'MARGIN';
+  return 'CARRYFORWARD'; // CF / NRML default
 }
 
 // Master strikes are stored scaled. MCX commodities are consistently ×100;
@@ -788,6 +971,7 @@ async function refreshMaster() {
       e: String(row.expiry || '').toUpperCase(),
       k: Number(row.strike || 0),
       g: seg,
+      l: Number(row.lotsize || 0) || 1, // lot size (units per lot) for margin/charges
     });
 
     if (isDerivative && row.expiry) {

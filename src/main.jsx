@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Search, X } from 'lucide-react';
+import Basket from './Basket.jsx';
 import './styles.css';
 
 const STORAGE_KEY = 'angelone_react_clients_v1';
@@ -350,45 +351,143 @@ function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelect
 }
 
 function Strategies({ clients, demoMode, onClientSession }) {
+  // Basket legs live here (above the option chain) so Buy/Sell clicks from the
+  // chain accumulate into the basket shown on the right.
+  const [legs, setLegs] = useState([]);
+  // Which logged-in client (with its session) the margin/charges calculators
+  // should use — the same account that loaded the option chain.
+  const [marginClient, setMarginClient] = useState(null);
+  const [margin, setMargin] = useState({ status: 'idle', value: 0, message: '' });
+  const [charges, setCharges] = useState({ status: 'idle', value: 0, message: '' });
+  const legSeq = useRef(0);
+
+  const addLeg = useCallback((leg) => {
+    setLegs((current) => [...current, { ...leg, id: `leg-${++legSeq.current}` }]);
+  }, []);
+
+  const updateLeg = useCallback((id, patch) => {
+    setLegs((current) => current.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)));
+  }, []);
+
+  const removeLeg = useCallback((id) => {
+    setLegs((current) => current.filter((leg) => leg.id !== id));
+  }, []);
+
+  const clearLegs = useCallback(() => setLegs([]), []);
+
+  // Price sent to Angel per leg: the typed price for limit legs, live LTP for
+  // market legs. Shared by both the margin and charge calculators.
+  const priceFor = (leg) => (leg.priceType === 'LIMIT' ? Number(leg.price) || 0 : Number(leg.ltp) || 0);
+
+  // Fields that change the calculated figures. Both margin and charges depend on
+  // token/qty/side/product/price; charges also need the per-leg price even on
+  // market legs (margin already gets it via priceFor). A checkbox toggle alone
+  // never refetches. Stringified so the debounced effect can diff cheaply.
+  const calcKey = useMemo(
+    () => JSON.stringify(legs.map((leg) => [
+      leg.token, leg.exchange, leg.qty, leg.lotSize, leg.action, leg.product,
+      leg.priceType, priceFor(leg),
+    ])),
+    [legs],
+  );
+
+  // Recompute real margin AND charges (debounced together) whenever the relevant
+  // inputs or the account change. The margin batch endpoint nets spread benefits
+  // across all legs; estimateCharges returns the basket's total brokerage + taxes.
+  useEffect(() => {
+    if (!legs.length) {
+      setMargin({ status: 'idle', value: 0, message: '' });
+      setCharges({ status: 'idle', value: 0, message: '' });
+      return undefined;
+    }
+    if (!marginClient?.session?.jwtToken) {
+      const msg = 'Load the option chain on a logged-in account to price this basket';
+      setMargin({ status: 'error', value: 0, message: msg });
+      setCharges({ status: 'error', value: 0, message: msg });
+      return undefined;
+    }
+
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      setMargin((m) => ({ ...m, status: 'loading' }));
+      setCharges((c) => ({ ...c, status: 'loading' }));
+
+      const legPayload = legs.map((leg) => ({
+        token: leg.token,
+        symbol: leg.tradingSymbol,
+        exchange: leg.exchange,
+        qty: leg.qty,
+        lotSize: leg.lotSize,
+        price: priceFor(leg),
+        tradeType: leg.action,
+        productType: leg.product,
+        orderType: leg.priceType === 'LIMIT' ? 'LIMIT' : 'MARKET',
+      }));
+
+      const post = (url) => fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client: marginClient, legs: legPayload }),
+      }).then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
+        return body;
+      });
+
+      const [marginOut, chargesOut] = await Promise.allSettled([
+        post('/api/angel/margin'),
+        post('/api/angel/charges'),
+      ]);
+      if (cancelled) return;
+
+      if (marginOut.status === 'fulfilled') {
+        setMargin({ status: 'ready', value: Number(marginOut.value.totalMarginRequired || 0), message: '' });
+      } else {
+        setMargin({ status: 'error', value: 0, message: marginOut.reason?.message || 'Margin failed' });
+      }
+
+      if (chargesOut.status === 'fulfilled') {
+        setCharges({
+          status: 'ready',
+          value: Number(chargesOut.value.totalCharges || 0),
+          breakup: chargesOut.value.breakup || null,
+          message: '',
+        });
+      } else {
+        setCharges({ status: 'error', value: 0, breakup: null, message: chargesOut.reason?.message || 'Charges failed' });
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [calcKey, marginClient]);
+
   return (
     <section className="strategies-view">
-      <OptionChainPanel clients={clients} demoMode={demoMode} onClientSession={onClientSession} />
-      <section className="strategy-workspace" aria-label="Strategy workspace">
-        <div className="strategy-header">
-          <div>
-            <h2>Strategy Builder</h2>
-            <p>Use the option chain on the left to inspect strikes and prepare orders.</p>
-          </div>
-          <button className="btn secondary" type="button">Save Layout</button>
-        </div>
-        <div className="strategy-canvas">
-          <div className="strategy-tile">
-            <span>Active Legs</span>
-            <strong>0</strong>
-          </div>
-          <div className="strategy-tile">
-            <span>Estimated Margin</span>
-            <strong>{formatPrice(0)}</strong>
-          </div>
-          <div className="strategy-tile">
-            <span>Risk</span>
-            <strong>Idle</strong>
-          </div>
-        </div>
-        <div className="strategy-panel p-5">
-          <div className="grid h-full place-items-center rounded-md border border-dashed border-slate-700/80 text-center">
-            <div>
-              <div className="text-base font-bold text-slate-200">Build strategy from selected strikes</div>
-              <div className="mt-1 text-xs font-semibold text-slate-500">Buy/Sell actions from the option chain can be wired here next.</div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <OptionChainPanel
+        clients={clients}
+        demoMode={demoMode}
+        onClientSession={onClientSession}
+        onAddLeg={addLeg}
+        onMarginContext={setMarginClient}
+      />
+      <Basket
+        legs={legs}
+        name="MY BASKET"
+        margin={margin}
+        charges={charges}
+        onUpdateLeg={updateLeg}
+        onRemoveLeg={removeLeg}
+        onClear={clearLegs}
+        onClose={clearLegs}
+      />
     </section>
   );
 }
 
-function OptionChainPanel({ clients, demoMode, onClientSession }) {
+function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarginContext }) {
   const [chainIndex, setChainIndex] = useState({});
   const [clientIndex, setClientIndex] = useState(0);
   const [symbol, setSymbol] = useState('');
@@ -409,6 +508,13 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
   const spotRef = useRef(null);            // latest spot tick
   const dirtyRef = useRef(false);          // ticks pending since last flush
   const rafRef = useRef(0);
+
+  // Current symbol/expiry/exchange/lotSize mirrored into refs so the memoized
+  // onTrade can read them without being re-created on every selection change.
+  const symbolRef = useRef('');
+  const expiryRef = useRef('');
+  const exchangeRef = useRef('NFO');
+  const lotSizeRef = useRef(1);
 
   // Tear down the live feed + rAF loop on unmount.
   useEffect(() => () => {
@@ -519,7 +625,11 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
       spotRef.current = null;
       dirtyRef.current = false;
       setChain(body);
-      onClientSession(clientIndex, body.session || client.session || null);
+      const liveSession = body.session || client.session || null;
+      onClientSession(clientIndex, liveSession);
+      // Hand the margin calculator the same logged-in account (with its fresh
+      // session) that just loaded this chain.
+      onMarginContext?.({ ...client, session: liveSession });
       setStatus(`Loaded ${body.symbol} ${body.expiry}`);
       startLiveFeed(body);
     } catch (error) {
@@ -529,12 +639,38 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
     }
   }
 
-  // Buy/Sell action buttons — UI only for now (no order is placed). Just
-  // reflects the click in the status line. Memoized so streaming ticks never
-  // re-render the action buttons.
-  const onTrade = useCallback((side, action, strike) => {
-    setStatus(`${action} ${side.toUpperCase()} ${strike}`);
-  }, []);
+  // Keep refs current so onTrade (memoized with no deps) reads live values.
+  symbolRef.current = symbol;
+  expiryRef.current = expiry;
+  exchangeRef.current = chain?.exchange || 'NFO';
+  lotSizeRef.current = Number(chain?.lotSize) || 1;
+
+  // Buy/Sell action buttons — push a leg into the basket. UI only (no order is
+  // placed). Memoized with no deps so streaming ticks never re-render the
+  // action buttons; current symbol/expiry/exchange/lotSize come from refs.
+  // tradingSymbol is the per-strike contract symbol (e.g. NIFTY...CE) needed by
+  // the charges estimator; passed through from the clicked row.
+  const onTrade = useCallback((side, action, strike, token, ltp, changePct, tradingSymbol) => {
+    onAddLeg?.({
+      symbol: symbolRef.current,
+      tradingSymbol: tradingSymbol || null,
+      expiry: expiryRef.current,
+      exchange: exchangeRef.current,
+      lotSize: lotSizeRef.current,
+      strike,
+      optionType: side === 'call' ? 'CE' : 'PE',
+      action,                 // 'BUY' | 'SELL'
+      product: 'CF',
+      qty: 1,                 // in LOTS; server multiplies by lotSize for units
+      price: '',
+      priceType: 'MARKET',
+      ltp: ltp ?? null,
+      changePct: changePct ?? null,
+      token: token ?? null,
+      selected: true,
+    });
+    setStatus(`${action} ${side.toUpperCase()} ${strike} added to basket`);
+  }, [onAddLeg]);
 
   // Subscribe to the Angel feed for this chain's tokens, then stream ticks
   // in over SSE and fold each one into `live` state (with up/down direction).
@@ -754,6 +890,8 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
                   putAt={putTick?.at || 0}
                   callToken={chain.callTokens?.[index] || null}
                   putToken={chain.putTokens?.[index] || null}
+                  callSymbol={chain.callSymbols?.[index] || null}
+                  putSymbol={chain.putSymbols?.[index] || null}
                   onTrade={onTrade}
                   maxOi={maxOi}
                 />
@@ -786,7 +924,8 @@ function EmptyState({ title }) {
 const ChainRow = React.memo(function ChainRow({
   strike, isAtm, callItm, putItm,
   callLtp, putLtp, callOi, putOi, callClose, putClose,
-  callDir, putDir, callAt, putAt, callToken, putToken, onTrade, maxOi,
+  callDir, putDir, callAt, putAt, callToken, putToken,
+  callSymbol, putSymbol, onTrade, maxOi,
 }) {
   const callChg = changePct(callLtp, callClose);
   const putChg = changePct(putLtp, putClose);
@@ -803,11 +942,11 @@ const ChainRow = React.memo(function ChainRow({
         <span className="ltp-val">{formatPrice(callLtp)}</span>
       </td>
       <td className={`action call-action${callItm ? ' itm-call' : ''}`}>
-        <TradeActions side="call" strike={strike} token={callToken} onTrade={onTrade} />
+        <TradeActions side="call" strike={strike} token={callToken} symbol={callSymbol} ltp={callLtp} chg={callChg} onTrade={onTrade} />
       </td>
       <td className="strike">{strike}</td>
       <td className={`action put-action${putItm ? ' itm-put' : ''}`}>
-        <TradeActions side="put" strike={strike} token={putToken} onTrade={onTrade} />
+        <TradeActions side="put" strike={strike} token={putToken} symbol={putSymbol} ltp={putLtp} chg={putChg} onTrade={onTrade} />
       </td>
       <td className={`ltp put-ltp${putItm ? ' itm-put' : ''}${putDir ? ` flash-${putDir}` : ''}`} key={`pl-${putAt}`}>
         <span className="ltp-val">{formatPrice(putLtp)}</span>
@@ -822,10 +961,16 @@ const ChainRow = React.memo(function ChainRow({
 });
 
 // Always-visible Buy/Sell pair in the Action column. Memoized on stable props
-// (side/strike/token/onTrade), so live ticks never re-render the buttons.
-const TradeActions = React.memo(function TradeActions({ side, strike, token, onTrade }) {
+// (side/strike/token/onTrade) so live ticks never re-render the buttons — the
+// streaming ltp/chg are mirrored into refs and only read at click time, so they
+// don't count toward the memo's shallow compare.
+const TradeActions = React.memo(function TradeActions({ side, strike, token, symbol, ltp, chg, onTrade }) {
   const label = side === 'call' ? 'Call' : 'Put';
   const disabled = !token;
+  const ltpRef = useRef(ltp);
+  const chgRef = useRef(chg);
+  ltpRef.current = ltp;
+  chgRef.current = chg;
   return (
     <div className="trade-actions" role="group" aria-label={`${label} actions`}>
       <button
@@ -833,18 +978,25 @@ const TradeActions = React.memo(function TradeActions({ side, strike, token, onT
         type="button"
         title={`Buy ${label} ${strike}`}
         disabled={disabled}
-        onClick={() => onTrade?.(side, 'BUY', strike, token)}
+        onClick={() => onTrade?.(side, 'BUY', strike, token, ltpRef.current, chgRef.current, symbol)}
       >B</button>
       <button
         className="trade-btn sell"
         type="button"
         title={`Sell ${label} ${strike}`}
         disabled={disabled}
-        onClick={() => onTrade?.(side, 'SELL', strike, token)}
+        onClick={() => onTrade?.(side, 'SELL', strike, token, ltpRef.current, chgRef.current, symbol)}
       >S</button>
     </div>
   );
-});
+}, (prev, next) =>
+  // Custom comparator: ignore ltp/chg (read via refs at click), so the buttons
+  // only re-render when their stable identity props actually change.
+  prev.side === next.side &&
+  prev.symbol === next.symbol &&
+  prev.strike === next.strike &&
+  prev.token === next.token &&
+  prev.onTrade === next.onTrade);
 
 function closeStream(ref) {
   if (ref.current) {

@@ -80,6 +80,32 @@
   --shadow-pop: 0 4px 24px rgba(0, 0, 0, .12);
   --radius: 10px;
 
+  /* ── Angel One real design tokens (subset used by the Basket panel) ──
+     Lifted from Angel's production stylesheet so the basket maps to their
+     genuine --color-* names. Light values; see .dark-mode-theme for dark. */
+  --color-neutral-background: #ffffff;
+  --color-neutral-background-grey: #F1F4FD;
+  --color-neutral-background-hover: #F5F7FA;
+  --color-border-grey: #DDDFE4;
+  --color-neutral-border: #EAEBF1;
+  --color-text-bold: #253040;
+  --color-text-base: #425061;
+  --color-neutral-caption: #717A89;
+  --color-text-muted: #A2A8B4;
+  --color-neutral-placeholder: #959FB0;
+  --color-text-blue: #3F5BD9;
+  --color-text-blue-hover: #354CB5;
+  --color-surface-primary: #E8ECFC;
+  --color-background-primary: #F1F4FD;
+  --color-success-main: #008F75;
+  --color-background-success: #F0FAF5;
+  --color-error-main: #D64D4D;
+  --color-background-error: #FFF2F2;
+  --color-icon-gold: #FF9933;
+  --color-text-secondary: #581DBE;
+  --color-surface-secondary: #EDE3FC;
+  --color-basket-shadow: 6px 6px 28px 0px rgba(43, 47, 63, .1);
+
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -1051,3 +1077,389 @@ select { min-width: 96px; }
   .actions { justify-content: start; }
   .option-chain-panel { min-height: 640px; }
 }
+
+/* ─────────────────────────── Basket panel ─────────────────────────── */
+/* Multi-leg order ticket shown beside the option chain. Restyled to Angel
+   One's real design tokens (--color-* from their stylesheet). The basket rules
+   below are written against the app's --ao-* names, so we remap those names to
+   the genuine Angel values once, scoped to .basket-panel — every basket color
+   becomes authentically Angel without touching the rest of the app. */
+.basket-panel {
+  /* Angel One real palette (light). Maps app tokens → Angel --color-* values. */
+  --ao-surface: var(--color-neutral-background, #ffffff);
+  --ao-surface-2: var(--color-neutral-background-grey, #F1F4FD);
+  --ao-hover: var(--color-neutral-background-hover, #F5F7FA);
+  --ao-border: var(--color-border-grey, #DDDFE4);
+  --ao-border-soft: var(--color-neutral-border, #EAEBF1);
+  --ao-bold: var(--color-text-bold, #253040);
+  --ao-base: var(--color-text-base, #425061);
+  --ao-caption: var(--color-neutral-caption, #717A89);
+  --ao-muted: var(--color-text-muted, #A2A8B4);
+  --ao-placeholder: var(--color-neutral-placeholder, #959FB0);
+  --ao-blue: var(--color-text-blue, #3F5BD9);
+  --ao-blue-hover: var(--color-text-blue-hover, #354CB5);
+  --ao-blue-surface: var(--color-surface-primary, #E8ECFC);
+  --ao-blue-bg: var(--color-background-primary, #F1F4FD);
+  --ao-green: var(--color-success-main, #008F75);
+  --ao-green-bg: var(--color-background-success, #F0FAF5);
+  --ao-red: var(--color-error-main, #D64D4D);
+  --ao-red-bg: var(--color-background-error, #FFF2F2);
+  --ao-gold: var(--color-icon-gold, #FF9933);
+  --ao-purple: var(--color-text-secondary, #581DBE);
+  --ao-purple-surface: var(--color-surface-secondary, #EDE3FC);
+  --shadow-card: var(--color-basket-shadow, 6px 6px 28px 0 rgba(43,47,63,.1));
+
+  /* Angel uses Roboto across the app. */
+  font-family: Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+
+  --basket-cols: 26px minmax(120px, 1.4fr) 56px 116px 100px 64px 70px 96px minmax(110px, 130px);
+  display: grid;
+  grid-template-rows: auto auto auto auto auto;
+  /* Size to content (like the real Angel basket), not the full viewport. The
+     rows area scrolls internally once the basket gets tall. */
+  align-self: start;
+  height: auto;
+  max-height: 100%;
+  min-height: 0;
+  background: var(--ao-surface);
+  color: var(--ao-base);
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+/* ── Title bar ── */
+.basket-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--ao-surface-2);
+  border-bottom: 1px solid var(--ao-border-soft);
+}
+.basket-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.basket-name { font-weight: 700; color: var(--ao-bold); font-size: var(--fs-base); letter-spacing: .02em; white-space: nowrap; }
+.basket-rename {
+  border: none; background: none; cursor: pointer; color: var(--ao-blue);
+  line-height: 1; padding: 2px; display: inline-flex; align-items: center; border-radius: 4px;
+}
+.basket-rename:hover { background: var(--ao-blue-bg); }
+.basket-name-input {
+  width: 150px; padding: 3px 6px; border: 1px solid var(--ao-blue); border-radius: 6px;
+  background: var(--ao-surface); color: var(--ao-bold); font-size: var(--fs-base);
+  font-weight: 700; letter-spacing: .02em;
+}
+.basket-name-input:focus { outline: none; box-shadow: 0 0 0 3px var(--ao-blue-surface); }
+.basket-count { color: var(--ao-caption); font-size: var(--fs-sm); white-space: nowrap; }
+
+/* Search: capped width, pushed to the right — not full-width. */
+.basket-search { position: relative; flex: 0 1 360px; max-width: 360px; min-width: 0; margin-left: auto; display: flex; align-items: center; }
+.basket-search-icon { position: absolute; left: 9px; color: var(--ao-placeholder); pointer-events: none; }
+.basket-search-input {
+  width: 100%;
+  padding: 6px 10px 6px 30px;
+  border: 1px solid var(--ao-border);
+  border-radius: 7px;
+  background: var(--ao-surface);
+  color: var(--ao-base);
+  font-size: var(--fs-sm);
+}
+.basket-search-input::placeholder { color: var(--ao-placeholder); }
+.basket-search-input:focus { outline: none; border-color: var(--ao-blue); box-shadow: 0 0 0 3px var(--ao-blue-surface); }
+
+.basket-window-actions { display: flex; gap: 2px; }
+.basket-window-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  border: 1px solid transparent; background: none; color: var(--ao-caption); cursor: pointer;
+}
+.basket-window-btn:hover { background: var(--ao-hover); color: var(--ao-base); }
+
+/* ── Column heads + rows share one grid template ── */
+.basket-colhead,
+.basket-row {
+  display: grid;
+  grid-template-columns: var(--basket-cols);
+  align-items: start;
+  column-gap: 8px;
+  padding: 8px 12px;
+}
+/* Every cell's primary control is --ctl tall and sits on the same top line, so
+   the price input lines up inline with Action/Strike/CE-PE/Product/Quantity.
+   The Stock cell and the price's LIMIT/MARKET toggle flow below that line. */
+.basket-panel { --ctl: 28px; }
+.basket-row > span,
+.basket-colhead > span { min-height: var(--ctl); display: flex; align-items: center; }
+.basket-row .bc-stock { align-items: flex-start; flex-direction: column; justify-content: center; }
+.basket-colhead {
+  background: var(--ao-surface);
+  border-bottom: 1px solid var(--ao-border-soft);
+  color: var(--ao-caption);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-transform: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Light gray vertical separator, like the real Angel basket: one between
+   CE/PE | Product. Drawn as a left border on the Product cell, inset
+   vertically so it's a short line. */
+.basket-colhead .bc-product,
+.basket-row .bc-product {
+  position: relative;
+}
+.basket-colhead .bc-product::before,
+.basket-row .bc-product::before {
+  content: "";
+  position: absolute;
+  /* Sit in the middle of the 8px column-gap to the cell's left, not hugging
+     the next control. The cell edge is at 0; the gap spans -8px..0, so its
+     centre is -4px — but the Product/Expiry control is left-aligned in the
+     cell, so nudge a bit further into the gap for visual centring. */
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 20px;
+  background: var(--ao-border);
+}
+
+/* Center the Action / CE-PE / Product pills within their columns so the gray
+   separators sit evenly between the pills (not hugging one side). */
+.basket-row .bc-action,
+.basket-row .bc-cepe,
+.basket-row .bc-product,
+.basket-colhead .bc-action,
+.basket-colhead .bc-cepe,
+.basket-colhead .bc-product { justify-content: center; }
+
+/* Rows grow with content but cap out, then scroll — keeps the basket compact. */
+.basket-rows { overflow-y: auto; min-height: 0; max-height: 60vh; }
+/* Dashed gray separator between legs, like the real Angel basket. */
+.basket-row { border-bottom: 1px dashed var(--ao-border); }
+.basket-row:last-child { border-bottom: none; }
+.basket-row:hover { background: var(--ao-hover); }
+/* Light red wash on SELL legs so short positions read at a glance. */
+.basket-row.sell-leg { background: var(--ao-red-bg); }
+.basket-row.sell-leg:hover { background: var(--ao-red-surface, #FFECEC); }
+
+.bc-check input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--ao-blue); }
+
+/* Stock cell: symbol + row icons on top, LTP + change below */
+.bc-stock { min-width: 0; }
+.basket-stock-head { display: flex; align-items: center; gap: 8px; }
+.basket-symbol { color: var(--ao-bold); font-size: var(--fs-base); font-weight: 700; }
+.basket-rowicons { display: inline-flex; gap: 4px; }
+.basket-rowicons button {
+  border: none; background: none; cursor: pointer; color: var(--ao-muted);
+  display: inline-flex; padding: 2px; border-radius: 4px;
+}
+.basket-rowicons button:hover { color: var(--ao-blue); background: var(--ao-surface-2); }
+.basket-stock-sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--fs-xs); }
+.basket-ltp { font-weight: 700; color: var(--ao-base); }
+.basket-chg.up { color: var(--ao-green); }
+.basket-chg.down { color: var(--ao-red); }
+.basket-chg.flat { color: var(--ao-caption); }
+
+/* Action pill (Buy/Sell) */
+.basket-action-pill {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--ctl); height: var(--ctl); border-radius: 6px; cursor: pointer;
+  font-weight: 700; font-size: var(--fs-base); line-height: 1;
+}
+.basket-action-pill.buy  { border: 1px solid var(--ao-green); color: var(--ao-green); background: var(--ao-green-bg); }
+.basket-action-pill.buy:hover  { background: var(--ao-green); color: #fff; }
+.basket-action-pill.sell { border: 1px solid var(--ao-red); color: var(--ao-red); background: var(--ao-red-bg); }
+.basket-action-pill.sell:hover { background: var(--ao-red); color: #fff; }
+
+/* Read-only-ish field (expiry) and steppers (strike / qty) */
+.basket-field {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 6px;
+  width: 100%; height: var(--ctl); padding: 0 8px; border: 1px solid var(--ao-border); border-radius: 6px;
+  background: var(--ao-surface); font-size: var(--fs-sm); color: var(--ao-base); white-space: nowrap; cursor: pointer;
+}
+.basket-field .chev { color: var(--ao-caption); font-size: 9px; }
+.basket-stepper {
+  display: inline-flex; align-items: stretch; width: 100%; height: var(--ctl);
+  border: 1px solid var(--ao-border); border-radius: 6px; background: var(--ao-surface); overflow: hidden;
+}
+.basket-stepper input {
+  flex: 1; min-width: 0; border: none; background: none; padding: 0 6px;
+  font-size: var(--fs-sm); color: var(--ao-base); text-align: left;
+}
+.basket-stepper input:focus { outline: none; }
+/* Up/down arrows on the right, like the real Angel basket steppers. */
+.basket-stepper-arrows {
+  display: flex; flex-direction: column; flex: none; width: 16px;
+  border-left: 1px solid var(--ao-border);
+}
+.basket-stepper-arrows button {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  border: none; background: var(--ao-surface-2); color: var(--ao-caption);
+  font-size: 7px; line-height: 1; cursor: pointer; padding: 0;
+}
+.basket-stepper-arrows button:first-child { border-bottom: 1px solid var(--ao-border); }
+.basket-stepper-arrows button:hover { background: var(--ao-blue-bg); color: var(--ao-blue); }
+
+/* CE/PE + Product pills */
+.basket-cepe-pill, .basket-product-pill {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 40px; height: var(--ctl); padding: 0 8px; border-radius: 6px;
+  font-weight: 700; font-size: var(--fs-sm); cursor: pointer;
+  border: 1px solid var(--ao-blue); color: var(--ao-blue); background: var(--ao-blue-bg);
+}
+.basket-cepe-pill.pe { border-color: var(--ao-purple); color: var(--ao-purple); background: var(--ao-purple-surface); }
+.basket-product-pill:hover, .basket-cepe-pill:hover { filter: brightness(.97); }
+
+/* Price input + LIMIT/MARKET toggle */
+.bc-price { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; }
+.basket-price-input {
+  width: 100%; height: var(--ctl); padding: 0 8px; border: 1px solid var(--ao-border); border-radius: 6px;
+  background: var(--ao-surface); font-size: var(--fs-sm); color: var(--ao-base); text-align: right;
+}
+.basket-price-input:disabled { background: var(--ao-surface-2); color: var(--ao-placeholder); }
+.basket-price-input:focus { outline: none; border-color: var(--ao-blue); }
+.basket-pricetype { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: var(--fs-xxs); font-weight: 700; color: var(--ao-placeholder); }
+.basket-pricetype .on { color: var(--ao-blue); }
+.basket-toggle {
+  position: relative; width: 34px; height: 18px; border-radius: 999px;
+  border: none; cursor: pointer; background: var(--ao-border); transition: background .15s ease;
+}
+.basket-toggle.market { background: var(--ao-blue); }
+.basket-toggle-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: transform .15s ease; box-shadow: 0 1px 2px rgba(0,0,0,.2);
+}
+.basket-toggle.market .basket-toggle-knob { transform: translateX(16px); }
+
+/* Empty state */
+.basket-empty {
+  display: grid; place-items: center; min-height: 90px;
+  padding: 20px; text-align: center; color: var(--ao-placeholder); font-size: var(--fs-sm);
+}
+.basket-empty strong { color: var(--ao-base); }
+
+/* Margin strip */
+.basket-marginstrip {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-top: 1px solid var(--ao-border-soft); background: var(--ao-surface-2);
+  font-size: var(--fs-sm);
+}
+.basket-margin { display: inline-flex; align-items: center; gap: 6px; }
+.basket-margin strong { color: var(--ao-bold); font-weight: 700; }
+.basket-margin strong.is-loading { color: var(--ao-caption); font-weight: 600; }
+.basket-margin strong.is-error { color: var(--ao-red); cursor: help; }
+.basket-multiplier { display: inline-flex; align-items: center; gap: 8px; color: var(--ao-caption); }
+/* Hide the browser's native number-input spinners everywhere in the basket so
+   only our custom ▲▼ steppers show (no doubled arrows). */
+.basket-panel input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.basket-panel input[type="number"]::-webkit-outer-spin-button,
+.basket-panel input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.basket-step {
+  display: inline-flex; align-items: stretch; height: var(--ctl);
+  border: 1px solid var(--ao-border); border-radius: 6px; background: var(--ao-surface); overflow: hidden;
+}
+.basket-step input {
+  width: 48px; border: none; background: none; padding: 0 10px; text-align: left;
+  color: var(--ao-base); font-size: var(--fs-sm);
+}
+.basket-step input:focus { outline: none; }
+/* Up/down arrows, separated from the number by a divider + padding. */
+.basket-step-arrows {
+  display: flex; flex-direction: column; flex: none; width: 18px;
+  border-left: 1px solid var(--ao-border);
+}
+.basket-step-arrows button {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  border: none; background: var(--ao-surface-2); color: var(--ao-caption);
+  font-size: 7px; line-height: 1; cursor: pointer; padding: 0;
+}
+.basket-step-arrows button:first-child { border-bottom: 1px solid var(--ao-border); }
+.basket-step-arrows button:hover { background: var(--ao-blue-bg); color: var(--ao-blue); }
+
+/* Footer */
+.basket-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-top: 1px solid var(--ao-border);
+}
+.basket-charges { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--ao-base); }
+.basket-charges strong { color: var(--ao-bold); font-weight: 700; }
+.basket-charges strong.is-loading { color: var(--ao-caption); font-weight: 600; }
+.basket-charges strong.is-error { color: var(--ao-red); cursor: help; }
+.basket-charges-info { color: var(--ao-placeholder); cursor: help; flex: none; display: block; }
+.basket-charges-tip:hover .basket-charges-info { color: var(--ao-blue); }
+
+/* Charges breakdown popover — shown on hovering the ⓘ. */
+.basket-charges-tip { position: relative; display: inline-flex; align-items: center; }
+.charges-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: 280px;
+  padding: 10px 12px;
+  background: var(--ao-surface);
+  border: 1px solid var(--ao-border);
+  border-radius: 10px;
+  box-shadow: var(--color-overlap-shadow, 0 4px 24px rgba(0, 0, 0, .12));
+  font-size: var(--fs-sm);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .14s ease, transform .14s ease, visibility .14s;
+  z-index: 50;
+}
+.basket-charges-tip:hover .charges-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+/* Little arrow pointing down to the ⓘ. */
+.charges-popover::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--ao-surface);
+  filter: drop-shadow(0 1px 0 var(--ao-border));
+}
+.charges-group { padding: 4px 0; border-bottom: 1px solid var(--ao-border-soft); }
+.charges-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.charges-row-head { font-weight: 700; color: var(--ao-bold); }
+.charges-row-child { color: var(--ao-caption); padding-left: 4px; font-size: var(--fs-xs); }
+.charges-row-total {
+  margin-top: 6px; padding: 8px 8px; border-radius: 7px;
+  background: var(--ao-surface-2); font-weight: 700; color: var(--ao-bold);
+}
+.charges-note { margin: 8px 2px 0; color: var(--ao-placeholder); font-size: var(--fs-xxs); line-height: 1.3; }
+/* Shared label styling for the Required Margin / Total Charges captions. */
+.basket-stat-label { color: var(--ao-caption); font-weight: 500; }
+/* Footer buttons: evenly spaced, consistent height, a gray divider before the
+   action group so Clear is visually separated from ANALYSE/SAVE/PREVIEW. */
+.basket-footer-actions { display: flex; align-items: center; gap: 8px; }
+.basket-footer-actions::before {
+  content: ""; width: 1px; height: 22px; background: var(--ao-border); margin-right: 2px;
+}
+.basket-btn {
+  height: 34px; padding: 0 14px; border-radius: 7px; font-size: var(--fs-sm); font-weight: 700;
+  letter-spacing: .02em; cursor: pointer; border: 1px solid transparent;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: background .12s ease, border-color .12s ease;
+}
+.basket-btn svg { flex: none; }
+.basket-btn.ghost { background: var(--ao-surface); border-color: var(--ao-border); color: var(--ao-caption); }
+.basket-btn.ghost:hover { background: var(--ao-hover); color: var(--ao-base); }
+.basket-btn.analyse { background: var(--ao-surface); border-color: var(--ao-gold); color: var(--ao-gold); }
+.basket-btn.analyse:hover { background: var(--ao-gold); color: #fff; }
+.basket-btn.save { background: var(--ao-surface); border-color: var(--ao-blue); color: var(--ao-blue); }
+.basket-btn.save:hover { background: var(--ao-blue-surface); }
+.basket-btn.preview { background: var(--ao-blue); color: #fff; }
+.basket-btn.preview:hover { background: var(--ao-blue-hover); }
