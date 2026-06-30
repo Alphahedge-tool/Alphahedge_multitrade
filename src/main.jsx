@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Search, X } from 'lucide-react';
 import './styles.css';
 
 const STORAGE_KEY = 'angelone_react_clients_v1';
@@ -421,6 +422,13 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
     return [...preferred.filter((item) => all.includes(item)), ...all.filter((item) => !preferred.includes(item))];
   }, [chainIndex]);
 
+  // Only real, logged-in accounts may drive the option chain — never the
+  // SIMULATED/demo seed or an account that hasn't authenticated yet.
+  const loggedInIndexes = useMemo(
+    () => clients.map((client, index) => (client.loggedIn ? index : -1)).filter((index) => index >= 0),
+    [clients],
+  );
+
   const expiries = chainIndex[symbol] || [];
 
   useEffect(() => {
@@ -430,6 +438,14 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
   useEffect(() => {
     if (!symbol && symbols.length) setSymbol(symbols[0]);
   }, [symbol, symbols]);
+
+  // Keep the selected account pointed at a logged-in client. If the current
+  // pick logs out (or was the simulated seed), jump to the first logged-in one.
+  useEffect(() => {
+    if (loggedInIndexes.length && !loggedInIndexes.includes(clientIndex)) {
+      setClientIndex(loggedInIndexes[0]);
+    }
+  }, [loggedInIndexes, clientIndex]);
 
   useEffect(() => {
     if (expiries.length && !expiries.includes(expiry)) setExpiry(expiries[0]);
@@ -467,6 +483,10 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
     const client = clients[clientIndex];
     if (!client) {
       setStatus('Select a client');
+      return;
+    }
+    if (!client.loggedIn) {
+      setStatus('Log in an account first - option chain needs a live logged-in account');
       return;
     }
     if (demoMode) {
@@ -508,6 +528,13 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
       setLoading(false);
     }
   }
+
+  // Buy/Sell action buttons — UI only for now (no order is placed). Just
+  // reflects the click in the status line. Memoized so streaming ticks never
+  // re-render the action buttons.
+  const onTrade = useCallback((side, action, strike) => {
+    setStatus(`${action} ${side.toUpperCase()} ${strike}`);
+  }, []);
 
   // Subscribe to the Angel feed for this chain's tokens, then stream ticks
   // in over SSE and fold each one into `live` state (with up/down direction).
@@ -611,15 +638,10 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
       </header>
 
       <div className="chain-controls">
-        <select value={clientIndex} onChange={(event) => setClientIndex(Number(event.target.value))} title="Client">
-          {clients.map((client, index) => (
-            <option key={`${client.clientCode}-${index}`} value={index}>
-              {client.alias || client.clientCode || `Client ${index + 1}`}
-            </option>
-          ))}
-        </select>
         <PillSelect
           title="Symbol"
+          searchable
+          searchPlaceholder="Search underlying..."
           value={symbol}
           onChange={setSymbol}
           options={symbols.map((item) => {
@@ -682,22 +704,26 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
             <col className="col-oi" />
             <col className="col-chg" />
             <col className="col-ltp" />
+            <col className="col-action" />
             <col className="col-strike" />
+            <col className="col-action" />
             <col className="col-ltp" />
             <col className="col-chg" />
             <col className="col-oi" />
           </colgroup>
           <thead>
             <tr className="chain-side-head">
-              <th className="side-call" colSpan="3">CALL</th>
+              <th className="side-call" colSpan="4">CALL</th>
               <th className="side-strike">STRIKE</th>
-              <th className="side-put" colSpan="3">PUT</th>
+              <th className="side-put" colSpan="4">PUT</th>
             </tr>
             <tr>
               <th>OI</th>
               <th>Chng%</th>
               <th className="ltp-head">LTP</th>
+              <th>Action</th>
               <th>Strike</th>
+              <th>Action</th>
               <th className="ltp-head">LTP</th>
               <th>Chng%</th>
               <th>OI</th>
@@ -726,6 +752,9 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
                   putDir={putTick?.dir || ''}
                   callAt={callTick?.at || 0}
                   putAt={putTick?.at || 0}
+                  callToken={chain.callTokens?.[index] || null}
+                  putToken={chain.putTokens?.[index] || null}
+                  onTrade={onTrade}
                   maxOi={maxOi}
                 />
               );
@@ -738,8 +767,6 @@ function OptionChainPanel({ clients, demoMode, onClientSession }) {
           </tbody>
         </table>
       </div>
-
-      <div className="chain-status">{status}</div>
     </aside>
   );
 }
@@ -759,7 +786,7 @@ function EmptyState({ title }) {
 const ChainRow = React.memo(function ChainRow({
   strike, isAtm, callItm, putItm,
   callLtp, putLtp, callOi, putOi, callClose, putClose,
-  callDir, putDir, callAt, putAt, maxOi,
+  callDir, putDir, callAt, putAt, callToken, putToken, onTrade, maxOi,
 }) {
   const callChg = changePct(callLtp, callClose);
   const putChg = changePct(putLtp, putClose);
@@ -772,14 +799,18 @@ const ChainRow = React.memo(function ChainRow({
         <span className="oi-val">{formatQty(callOi)}</span>
       </td>
       <td className={`chg ${chgClass(callChg)}${callItm ? ' itm-call' : ''}`}>{formatChange(callChg)}</td>
-      <td className={`ltp call-ltp has-actions${callItm ? ' itm-call' : ''}${callDir ? ` flash-${callDir}` : ''}`} key={`cl-${callAt}`}>
+      <td className={`ltp call-ltp${callItm ? ' itm-call' : ''}${callDir ? ` flash-${callDir}` : ''}`} key={`cl-${callAt}`}>
         <span className="ltp-val">{formatPrice(callLtp)}</span>
-        <TradeActions side="call" />
+      </td>
+      <td className={`action call-action${callItm ? ' itm-call' : ''}`}>
+        <TradeActions side="call" strike={strike} token={callToken} onTrade={onTrade} />
       </td>
       <td className="strike">{strike}</td>
-      <td className={`ltp put-ltp has-actions${putItm ? ' itm-put' : ''}${putDir ? ` flash-${putDir}` : ''}`} key={`pl-${putAt}`}>
+      <td className={`action put-action${putItm ? ' itm-put' : ''}`}>
+        <TradeActions side="put" strike={strike} token={putToken} onTrade={onTrade} />
+      </td>
+      <td className={`ltp put-ltp${putItm ? ' itm-put' : ''}${putDir ? ` flash-${putDir}` : ''}`} key={`pl-${putAt}`}>
         <span className="ltp-val">{formatPrice(putLtp)}</span>
-        <TradeActions side="put" />
       </td>
       <td className={`chg ${chgClass(putChg)}${putItm ? ' itm-put' : ''}`}>{formatChange(putChg)}</td>
       <td className={`oi put-oi${putItm ? ' itm-put' : ''}`}>
@@ -790,17 +821,27 @@ const ChainRow = React.memo(function ChainRow({
   );
 });
 
-// Floating Buy/Sell action group that slides in over an LTP cell on row hover.
-// Memoized with a stable `side` prop, so live ticks never re-render the
-// buttons — the CSS hover/slide stays smooth no matter how fast the feed runs.
-const TradeActions = React.memo(function TradeActions({ side }) {
+// Always-visible Buy/Sell pair in the Action column. Memoized on stable props
+// (side/strike/token/onTrade), so live ticks never re-render the buttons.
+const TradeActions = React.memo(function TradeActions({ side, strike, token, onTrade }) {
   const label = side === 'call' ? 'Call' : 'Put';
+  const disabled = !token;
   return (
     <div className="trade-actions" role="group" aria-label={`${label} actions`}>
-      <button className="trade-btn buy" type="button" title={`Buy ${label}`}>B</button>
-      <button className="trade-btn sell" type="button" title={`Sell ${label}`}>S</button>
-      <button className="trade-btn ghost" type="button" title="Chart" aria-label="Chart">📈</button>
-      <button className="trade-btn ghost" type="button" title="More" aria-label="More">⋮</button>
+      <button
+        className="trade-btn buy"
+        type="button"
+        title={`Buy ${label} ${strike}`}
+        disabled={disabled}
+        onClick={() => onTrade?.(side, 'BUY', strike, token)}
+      >B</button>
+      <button
+        className="trade-btn sell"
+        type="button"
+        title={`Sell ${label} ${strike}`}
+        disabled={disabled}
+        onClick={() => onTrade?.(side, 'SELL', strike, token)}
+      >S</button>
     </div>
   );
 });
@@ -834,10 +875,20 @@ function Select({ onChange, options, value }) {
 
 // Custom dropdown that renders a colored pill badge beside each option —
 // native <option> can't show styled badges, so we build our own panel.
-function PillSelect({ title, value, onChange, options }) {
+function PillSelect({ title, value, onChange, options, searchable = false, searchPlaceholder = 'Search...' }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const rootRef = useRef(null);
+  const searchRef = useRef(null);
   const selected = options.find((o) => o.value === value);
+
+  // Case-insensitive filter over the option label/value when searching.
+  const visibleOptions = useMemo(() => {
+    if (!searchable || !query.trim()) return options;
+    const needle = query.trim().toLowerCase();
+    return options.filter((o) =>
+      String(o.label).toLowerCase().includes(needle) || String(o.value).toLowerCase().includes(needle));
+  }, [options, query, searchable]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -853,9 +904,31 @@ function PillSelect({ title, value, onChange, options }) {
     };
   }, [open]);
 
+  // Reset the query each time the menu closes, and focus the search box when it
+  // opens so the user can type immediately.
+  useEffect(() => {
+    if (!open) {
+      setQuery('');
+      return;
+    }
+    if (searchable) {
+      const id = requestAnimationFrame(() => searchRef.current?.focus());
+      return () => cancelAnimationFrame(id);
+    }
+    return undefined;
+  }, [open, searchable]);
+
   function pick(optionValue) {
     onChange(optionValue);
     setOpen(false);
+  }
+
+  // Enter in the search box selects the first match — quick keyboard flow.
+  function onSearchKeyDown(event) {
+    if (event.key === 'Enter' && visibleOptions.length) {
+      event.preventDefault();
+      pick(visibleOptions[0].value);
+    }
   }
 
   return (
@@ -873,20 +946,47 @@ function PillSelect({ title, value, onChange, options }) {
         <span className="pill-select-caret" aria-hidden="true">▾</span>
       </button>
       {open && (
-        <ul className="pill-select-menu" role="listbox">
-          {options.map((option) => (
-            <li
-              key={option.value}
-              role="option"
-              aria-selected={option.value === value}
-              className={`pill-select-option${option.value === value ? ' active' : ''}`}
-              onClick={() => pick(option.value)}
-            >
-              <span className="pill-select-label">{option.label}</span>
-              {option.pill && <span className={`opt-pill ${option.pillClass}`}>{option.pill}</span>}
-            </li>
-          ))}
-        </ul>
+        <div className="pill-select-menu" role="listbox">
+          {searchable && (
+            <div className="pill-select-search">
+              <Search className="pill-select-search-icon" size={14} aria-hidden="true" />
+              <input
+                ref={searchRef}
+                type="text"
+                className="pill-select-search-input"
+                placeholder={searchPlaceholder}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={onSearchKeyDown}
+              />
+              {query && (
+                <button
+                  type="button"
+                  className="pill-select-search-clear"
+                  title="Clear search"
+                  onClick={() => { setQuery(''); searchRef.current?.focus(); }}
+                ><X size={13} /></button>
+              )}
+            </div>
+          )}
+          <ul className="pill-select-list">
+            {visibleOptions.map((option) => (
+              <li
+                key={option.value}
+                role="option"
+                aria-selected={option.value === value}
+                className={`pill-select-option${option.value === value ? ' active' : ''}`}
+                onClick={() => pick(option.value)}
+              >
+                <span className="pill-select-label">{option.label}</span>
+                {option.pill && <span className={`opt-pill ${option.pillClass}`}>{option.pill}</span>}
+              </li>
+            ))}
+            {!visibleOptions.length && (
+              <li className="pill-select-empty">No matches for "{query}"</li>
+            )}
+          </ul>
+        </div>
       )}
     </div>
   );
