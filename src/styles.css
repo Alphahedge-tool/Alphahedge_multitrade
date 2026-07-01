@@ -1196,7 +1196,7 @@ select { min-width: 96px; }
   background: var(--ao-surface);
   border-bottom: 1px solid var(--ao-border-soft);
   color: var(--ao-caption);
-  font-size: var(--fs-sm);
+  font-size: 0.875rem;
   font-weight: 600;
   text-transform: none;
   position: sticky;
@@ -1261,7 +1261,10 @@ select { min-width: 96px; }
 }
 .basket-rowicons button:hover { color: var(--ao-blue); background: var(--ao-surface-2); }
 .basket-stock-sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--fs-xs); }
-.basket-ltp { font-weight: 700; color: var(--ao-base); }
+.basket-ltp { font-weight: 700; color: var(--ao-base); border-radius: 3px; padding: 0 2px; }
+/* Tick flash on the basket LTP, reusing the option-chain keyframes. */
+.basket-ltp.flash-up { animation: ltp-flash-up .6s ease-out; }
+.basket-ltp.flash-down { animation: ltp-flash-down .6s ease-out; }
 .basket-chg.up { color: var(--ao-green); }
 .basket-chg.down { color: var(--ao-red); }
 .basket-chg.flat { color: var(--ao-caption); }
@@ -1339,7 +1342,7 @@ select { min-width: 96px; }
 .basket-product-pill:hover, .basket-cepe-pill:hover { filter: brightness(.97); }
 
 /* Price input + LIMIT/MARKET toggle */
-.bc-price { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; }
+.basket-row .bc-price { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; }
 .basket-price-input {
   width: 100%; height: var(--ctl); padding: 0 8px; border: 1px solid var(--ao-border); border-radius: 6px;
   background: var(--ao-surface); font-size: var(--fs-sm); color: var(--ao-base); text-align: right;
@@ -1376,6 +1379,16 @@ select { min-width: 96px; }
 .basket-margin strong { color: var(--ao-bold); font-weight: 700; }
 .basket-margin strong.is-loading { color: var(--ao-caption); font-weight: 600; }
 .basket-margin strong.is-error { color: var(--ao-red); cursor: help; }
+/* Manual margin refresh — recomputes at the current live prices on demand. */
+.basket-margin-refresh {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--ao-caption); cursor: pointer;
+}
+.basket-margin-refresh:hover:not(:disabled) { color: var(--ao-blue); background: var(--ao-surface-3, rgba(255,255,255,.06)); }
+.basket-margin-refresh:disabled { opacity: .45; cursor: default; }
+.basket-margin-refresh .spin { animation: basket-spin .8s linear infinite; }
+@keyframes basket-spin { to { transform: rotate(360deg); } }
 .basket-multiplier { display: inline-flex; align-items: center; gap: 8px; color: var(--ao-caption); }
 /* Hide the browser's native number-input spinners everywhere in the basket so
    only our custom ▲▼ steppers show (no doubled arrows). */

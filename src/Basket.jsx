@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Minus, X, Link2, Copy, Trash2, Pencil, Info, Eye, Bookmark, BarChart3 } from 'lucide-react';
+import { Search, Minus, X, Link2, Copy, Trash2, Pencil, Info, Eye, Bookmark, BarChart3, RefreshCw } from 'lucide-react';
 
 // Basket panel — collects option legs the user clicks (Buy/Sell) from the
 // option chain and lays them out like a multi-leg order ticket. UI only: no
@@ -21,14 +21,16 @@ export default function Basket({
   margin = { status: 'idle', value: 0, message: '' },
   charges = { status: 'idle', value: 0, message: '' },
   expiryIndex = {},
+  liveTicks = {},
   onRemoveLeg,
   onUpdateLeg,
   onResolveLeg,
+  onRefreshMargin,
   onClear,
   onClose,
 }) {
   const [query, setQuery] = useState('');
-  const [multiplier, setMultiplier] = useState(1);
+  const [multiplier, setMultiplier] = useState('1');
   const [basketName, setBasketName] = useState(name);
   const [editingName, setEditingName] = useState(false);
   const allChecked = legs.length > 0 && legs.every((leg) => leg.selected !== false);
@@ -39,9 +41,20 @@ export default function Basket({
 
   // Lot/Quantity Multiplier acts as a direct setter: set it to N and every leg's
   // Quantity becomes N lots. Margin/charges follow automatically (they read qty).
+  // The field holds a raw string so it can be cleared and retyped freely; we only
+  // push a qty to the legs when the value parses to a positive integer.
   function applyMultiplier(value) {
-    const qty = Math.max(1, Math.trunc(Number(value) || 1));
-    setMultiplier(qty);
+    setMultiplier(String(value));
+    const qty = Math.trunc(Number(value));
+    if (Number.isFinite(qty) && qty >= 1) {
+      legs.forEach((leg) => onUpdateLeg?.(leg.id, { qty }));
+    }
+  }
+
+  // On blur, snap an empty/invalid field back to a valid multiplier of 1.
+  function commitMultiplier() {
+    const qty = Math.max(1, Math.trunc(Number(multiplier) || 1));
+    setMultiplier(String(qty));
     legs.forEach((leg) => onUpdateLeg?.(leg.id, { qty }));
   }
 
@@ -113,6 +126,7 @@ export default function Basket({
           <BasketRow
             key={leg.id}
             leg={leg}
+            liveTick={leg.token != null ? liveTicks[leg.token] : null}
             expiries={expiryIndex[leg.symbol] || []}
             onRemoveLeg={onRemoveLeg}
             onUpdateLeg={onUpdateLeg}
@@ -134,6 +148,15 @@ export default function Basket({
           <strong className={marginClass(margin.status, margin.value)} title={margin.message || ''}>
             {renderMargin(margin)}
           </strong>
+          <button
+            type="button"
+            className="basket-margin-refresh"
+            title="Refresh margin at current prices"
+            onClick={onRefreshMargin}
+            disabled={!legs.length || margin.status === 'loading'}
+          >
+            <RefreshCw size={13} className={margin.status === 'loading' ? 'spin' : ''} aria-hidden="true" />
+          </button>
         </span>
         <label className="basket-multiplier">
           Lot/Quantity Multiplier
@@ -143,10 +166,11 @@ export default function Basket({
               min="1"
               value={multiplier}
               onChange={(event) => applyMultiplier(event.target.value)}
+              onBlur={commitMultiplier}
             />
             <span className="basket-step-arrows">
-              <button type="button" tabIndex={-1} title="Increase lots" onClick={() => applyMultiplier(multiplier + 1)}>▲</button>
-              <button type="button" tabIndex={-1} title="Decrease lots" onClick={() => applyMultiplier(multiplier - 1)}>▼</button>
+              <button type="button" tabIndex={-1} title="Increase lots" onClick={() => applyMultiplier((Math.trunc(Number(multiplier)) || 0) + 1)}>▲</button>
+              <button type="button" tabIndex={-1} title="Decrease lots" onClick={() => applyMultiplier(Math.max(1, (Math.trunc(Number(multiplier)) || 1) - 1))}>▼</button>
             </span>
           </span>
         </label>
@@ -194,10 +218,17 @@ export default function Basket({
 // A single leg row. Mirrors the screenshot columns: select, stock+LTP, action
 // (B/S pill), expiry, strike, CE/PE, product, quantity stepper, price + a
 // LIMIT/MARKET toggle.
-function BasketRow({ leg, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg }) {
+function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg }) {
   const isSell = leg.action === 'SELL';
   const isMarket = leg.priceType !== 'LIMIT';
-  const chg = Number(leg.changePct);
+  // Live LTP from the option-chain feed overrides the value captured when the
+  // leg was added, so the basket ticks along in real time. Falls back to the
+  // captured value when this leg's contract isn't in the streaming chain.
+  const ltp = liveTick?.ltp ?? leg.ltp;
+  const changePct = (liveTick && liveTick.ltp != null && liveTick.close)
+    ? Number((((liveTick.ltp - liveTick.close) / liveTick.close) * 100).toFixed(2))
+    : leg.changePct;
+  const chg = Number(changePct);
   const chgClass = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
 
   return (
@@ -221,10 +252,10 @@ function BasketRow({ leg, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg 
           </span>
         </span>
         <span className="basket-stock-sub">
-          <span className="basket-ltp">{formatLtp(leg.ltp)}</span>
-          {leg.changePct != null && Number.isFinite(chg) && (
+          <span className={`basket-ltp${liveTick?.dir ? ` flash-${liveTick.dir}` : ''}`} key={liveTick?.at || 0}>{formatLtp(ltp)}</span>
+          {changePct != null && Number.isFinite(chg) && (
             <span className={`basket-chg ${chgClass}`}>
-              {chg > 0 ? '▲' : chg < 0 ? '▼' : ''} {formatChange(leg.changePct)}%
+              {chg > 0 ? '▲' : chg < 0 ? '▼' : ''} {formatChange(changePct)}%
             </span>
           )}
         </span>
@@ -326,7 +357,7 @@ function BasketRow({ leg, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg 
           type="number"
           step="0.05"
           readOnly={isMarket}
-          value={isMarket ? formatNum(leg.ltp) : (leg.price ?? '')}
+          value={isMarket ? formatNum(ltp) : (leg.price ?? '')}
           placeholder="0.00"
           title={isMarket ? 'Market order — executes at live price' : 'Limit price'}
           onChange={(event) => onUpdateLeg?.(leg.id, { price: event.target.value })}
@@ -361,9 +392,12 @@ function ExpiryDropdown({ value, expiries = [], loading, error, onChange }) {
   const menuRef = useRef(null);
 
   // Position the portalled menu under the trigger (fixed coords from its rect).
+  const reposition = () => {
+    if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
+  };
   useLayoutEffect(() => {
-    if (!open || !triggerRef.current) return;
-    setRect(triggerRef.current.getBoundingClientRect());
+    if (!open) return;
+    reposition();
   }, [open]);
 
   useEffect(() => {
@@ -374,17 +408,17 @@ function ExpiryDropdown({ value, expiries = [], loading, error, onChange }) {
       setOpen(false);
     };
     const onKey = (event) => { if (event.key === 'Escape') setOpen(false); };
-    // Close on scroll/resize since the fixed menu would otherwise detach.
-    const onScrollResize = () => setOpen(false);
+    // Keep the fixed menu anchored to the trigger on scroll/resize instead of
+    // closing — the button's focus-scroll on open would otherwise slam it shut.
     document.addEventListener('mousedown', onDocClick);
     document.addEventListener('keydown', onKey);
-    window.addEventListener('scroll', onScrollResize, true);
-    window.addEventListener('resize', onScrollResize);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
     return () => {
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
-      window.removeEventListener('scroll', onScrollResize, true);
-      window.removeEventListener('resize', onScrollResize);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
     };
   }, [open]);
 

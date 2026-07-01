@@ -366,6 +366,15 @@ function Strategies({ clients, demoMode, onClientSession }) {
   // symbol -> [expiries], shared from the option chain so the basket's expiry
   // dropdown can list the alternatives for each leg.
   const [expiryIndex, setExpiryIndex] = useState({});
+  // token -> latest tick, mirrored from the option chain's live feed so basket
+  // legs show a live LTP. Kept OUT of the leg state on purpose: ticks must not
+  // retrigger the (expensive) margin/charges calc — that refreshes on demand.
+  const [liveTicks, setLiveTicks] = useState({});
+  const liveTicksRef = useRef({});
+  liveTicksRef.current = liveTicks;
+  // Bumped by the manual "refresh margin" button to force a recompute even when
+  // no leg field changed (e.g. to re-price MARKET legs at the current tick).
+  const [marginNonce, setMarginNonce] = useState(0);
   const legSeq = useRef(0);
 
   const addLeg = useCallback((leg) => {
@@ -508,6 +517,22 @@ function Strategies({ clients, demoMode, onClientSession }) {
     }
   }, [loadExpiryChain]);
 
+  // Manual margin/charges refresh. Snapshots the latest live LTP into each leg
+  // (so MARKET legs re-price at the current tick) and forces a recompute. Margin
+  // deliberately does NOT follow every tick — the user pulls a fresh figure here.
+  const refreshMargin = useCallback(() => {
+    const ticks = liveTicksRef.current;
+    setLegs((current) => current.map((leg) => {
+      const tick = leg.token != null ? ticks[leg.token] : null;
+      if (!tick || tick.ltp == null) return leg;
+      const changePct = (tick.ltp && tick.close)
+        ? Number((((tick.ltp - tick.close) / tick.close) * 100).toFixed(2))
+        : leg.changePct;
+      return { ...leg, ltp: tick.ltp, changePct };
+    }));
+    setMarginNonce((n) => n + 1);
+  }, []);
+
   const removeLeg = useCallback((id) => {
     setLegs((current) => current.filter((leg) => leg.id !== id));
   }, []);
@@ -601,7 +626,7 @@ function Strategies({ clients, demoMode, onClientSession }) {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [calcKey, marginClient]);
+  }, [calcKey, marginClient, marginNonce]);
 
   return (
     <section className="strategies-view">
@@ -612,6 +637,7 @@ function Strategies({ clients, demoMode, onClientSession }) {
         onAddLeg={addLeg}
         onMarginContext={setMarginClient}
         onExpiryIndex={setExpiryIndex}
+        onLiveTicks={setLiveTicks}
       />
       <Basket
         legs={legs}
@@ -619,9 +645,11 @@ function Strategies({ clients, demoMode, onClientSession }) {
         margin={margin}
         charges={charges}
         expiryIndex={expiryIndex}
+        liveTicks={liveTicks}
         onUpdateLeg={updateLeg}
         onResolveLeg={resolveLegContract}
         onRemoveLeg={removeLeg}
+        onRefreshMargin={refreshMargin}
         onClear={clearLegs}
         onClose={clearLegs}
       />
@@ -629,7 +657,7 @@ function Strategies({ clients, demoMode, onClientSession }) {
   );
 }
 
-function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarginContext, onExpiryIndex }) {
+const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarginContext, onExpiryIndex, onLiveTicks }) {
   const [chainIndex, setChainIndex] = useState({});
   const [clientIndex, setClientIndex] = useState(0);
   const [symbol, setSymbol] = useState('');
@@ -762,6 +790,7 @@ function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarg
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
       setLive({});
+      onLiveTicks?.({});
       setLiveSpot(null);
       prevRef.current = {};
       liveRef.current = {};
@@ -882,7 +911,10 @@ function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarg
       dirtyRef.current = false;
       if (spotRef.current) setLiveSpot(spotRef.current);
       // New object reference so memoized rows can diff by token value.
-      setLive({ ...liveRef.current });
+      const snapshot = { ...liveRef.current };
+      setLive(snapshot);
+      // Share the same tick snapshot with the basket so its legs' LTP ticks live.
+      onLiveTicks?.(snapshot);
     });
   }
 
@@ -1050,7 +1082,7 @@ function OptionChainPanel({ clients, demoMode, onClientSession, onAddLeg, onMarg
       </div>
     </aside>
   );
-}
+});
 
 function EmptyState({ title }) {
   return (
