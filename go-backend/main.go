@@ -17,6 +17,9 @@ import (
 	"angelone-backend/internal/angel"
 	"angelone-backend/internal/config"
 	"angelone-backend/internal/httpapi"
+	"angelone-backend/internal/kotak"
+	"angelone-backend/internal/supastore"
+	"angelone-backend/internal/upstox"
 )
 
 func main() {
@@ -26,7 +29,10 @@ func main() {
 	master := angel.NewMasterStore(cfg)
 	feed := angel.NewFeed(cfg)
 	orderFeed := angel.NewOrderFeed(cfg)
-	api := httpapi.New(cfg, client, master, feed, orderFeed)
+	upstoxClient := upstox.NewClient(cfg)
+	kotakClient := kotak.NewClient(cfg)
+	store := supastore.New(cfg) // nil when Supabase isn't configured
+	api := httpapi.New(cfg, client, master, feed, orderFeed, upstoxClient, kotakClient, store)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

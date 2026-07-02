@@ -5,6 +5,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,9 @@ import (
 
 	"angelone-backend/internal/angel"
 	"angelone-backend/internal/config"
+	"angelone-backend/internal/kotak"
+	"angelone-backend/internal/supastore"
+	"angelone-backend/internal/upstox"
 )
 
 // Server holds the shared dependencies and implements http.Handler.
@@ -25,10 +29,13 @@ type Server struct {
 	master    *angel.MasterStore
 	feed      *angel.Feed
 	orderFeed *angel.OrderFeed
+	upstox    *upstox.Client
+	kotak     *kotak.Client
+	store     *supastore.Client // nil when Supabase isn't configured
 }
 
-func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed, orderFeed *angel.OrderFeed) *Server {
-	return &Server{cfg: cfg, client: client, master: master, feed: feed, orderFeed: orderFeed}
+func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed, orderFeed *angel.OrderFeed, ups *upstox.Client, kot *kotak.Client, store *supastore.Client) *Server {
+	return &Server{cfg: cfg, client: client, master: master, feed: feed, orderFeed: orderFeed, upstox: ups, kotak: kot, store: store}
 }
 
 // Handler builds the router.
@@ -64,6 +71,32 @@ func (s *Server) Handler() http.Handler {
 	// posts its session to start watching, then listens on /order-stream.
 	mux.HandleFunc("/api/angel/order-subscribe", s.postJSON(s.handleOrderSubscribe))
 	mux.HandleFunc("/api/angel/order-stream", s.handleOrderStream)
+
+	// ── Upstox (broker #2): OAuth 2.0 login ─────────────────────────────────
+	// auto-login reuses a same-day token or returns {needsLogin, loginUrl};
+	// login-url just returns the browser URL; callback is the OAuth redirect
+	// target that finishes the login and stores the session.
+	mux.HandleFunc("/api/upstox/auto-login", s.postJSON(s.handleUpstoxAutoLogin))
+	mux.HandleFunc("/api/upstox/login-url", s.handleUpstoxLoginURL)
+	// The OAuth redirect target. Registered at BOTH paths: /upstox/callback is
+	// the default that must match the Upstox app registration (mirrors the known
+	// -good Alphahedge redirect_uri); /api/upstox/callback is kept for anyone who
+	// registered that variant instead.
+	mux.HandleFunc("/upstox/callback", s.handleUpstoxCallback)
+	mux.HandleFunc("/api/upstox/callback", s.handleUpstoxCallback)
+
+	// ── Kotak NEO (broker #3): fully-headless Login-with-TOTP ────────────────
+	// auto-login runs tradeApiLogin → tradeApiValidate server-side using the
+	// stored TOTP secret; no browser, no SMS OTP.
+	mux.HandleFunc("/api/kotak/auto-login", s.postJSON(s.handleKotakAutoLogin))
+
+	// ── Supabase-backed account storage ─────────────────────────────────────
+	// GET  → load all saved accounts (frontend fills the table on open)
+	// POST → save the current table back to Supabase {accounts:[...]}
+	// Both return {enabled:false} when Supabase isn't configured, so the
+	// frontend transparently falls back to local IndexedDB.
+	mux.HandleFunc("/api/accounts", s.handleAccounts)
+
 	mux.HandleFunc("/", s.serveStatic) // SPA static fallback
 	return withCORS(mux)
 }
@@ -288,6 +321,174 @@ func (s *Server) handleOrderSubscribe(ctx context.Context, body map[string]json.
 // (and connection status) as the account's orders change.
 func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
 	serveSSE(w, r, s.orderFeed.AddClient, s.orderFeed.RemoveClient)
+}
+
+// ── Upstox handlers ──────────────────────────────────────────────────────────
+
+// handleUpstoxAutoLogin logs an Upstox account in. It first reuses a same-day
+// token. If none exists:
+//   - autoLogin=true with phone/pin/totpSecret → runs the scripted-browser
+//     (Selenium) mobile→TOTP→PIN flow server-side; fully automated (TOTP is
+//     generated server-side).
+//   - otherwise → returns {needsLogin:true, loginUrl} so the frontend opens the
+//     one-click OAuth popup.
+// Body: {userId, state?, autoLogin?, phone?, pin?, totpSecret?}.
+func (s *Server) handleUpstoxAutoLogin(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req struct {
+		UserID     string `json:"userId"`
+		State      string `json:"state"`
+		AutoLogin  bool   `json:"autoLogin"`
+		Phone      string `json:"phone"`
+		PIN        string `json:"pin"`
+		TOTPSecret string `json:"totpSecret"`
+		APIKey     string `json:"apiKey"`
+		APISecret  string `json:"apiSecret"`
+	}
+	decodeReq(body, &req)
+
+	creds := upstox.AppCreds{APIKey: req.APIKey, APISecret: req.APISecret}
+	res, err := s.upstox.AutoLogin(ctx, req.UserID, req.State, creds)
+	if err == nil {
+		return res, nil // reused a live same-day token
+	}
+	var need *upstox.NeedsLogin
+	if !errors.As(err, &need) {
+		return nil, err
+	}
+	// No live token: pick the login path based on the account's Auto Login tick.
+	if req.AutoLogin {
+		return s.upstox.AutoLoginSelenium(ctx, upstox.AutoCreds{
+			Phone:      req.Phone,
+			PIN:        req.PIN,
+			TOTPSecret: req.TOTPSecret,
+			APIKey:     req.APIKey,
+			APISecret:  req.APISecret,
+		})
+	}
+	return map[string]any{"status": false, "needsLogin": true, "loginUrl": need.LoginURL}, nil
+}
+
+// handleUpstoxLoginURL returns just the browser OAuth URL (GET ?state=...), so
+// the frontend can trigger a fresh login without first attempting a reuse.
+func (s *Server) handleUpstoxLoginURL(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	creds := upstox.AppCreds{APIKey: q.Get("apiKey"), APISecret: q.Get("apiSecret")}
+	loginURL, err := s.upstox.LoginURL(creds, q.Get("state"))
+	if err != nil {
+		writeJSON(w, 400, errBody(err))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": true, "loginUrl": loginURL})
+}
+
+// handleUpstoxCallback is the OAuth redirect target. Upstox sends ?code=&state=;
+// we exchange the code for a token, store the session, and return a tiny HTML
+// page that hands the session back to the opener window and closes itself.
+func (s *Server) handleUpstoxCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if apiErr := q.Get("error"); apiErr != "" {
+		writeCallbackHTML(w, false, apiErr)
+		return
+	}
+	code := q.Get("code")
+	if code == "" {
+		writeCallbackHTML(w, false, "missing authorization code")
+		return
+	}
+	// If this is the headless auto-login flow, the AutoLoginSelenium call owns the
+	// (single-use) code exchange — do NOT consume it here. Just render a blank OK
+	// page so the browser navigation completes.
+	if s.upstox.IsSeleniumState(q.Get("state")) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><title>ok</title>Login captured.")
+		return
+	}
+	// The account creds were stashed when the login URL was issued (keyed by
+	// state), so this credential-less redirect can exchange the code.
+	creds := s.upstox.CredsForState(q.Get("state"))
+	sess, err := s.upstox.ExchangeCode(r.Context(), code, creds)
+	if err != nil {
+		writeCallbackHTML(w, false, err.Error())
+		return
+	}
+	writeCallbackHTML(w, true, sess.UserID)
+}
+
+// writeCallbackHTML renders the popup-completion page: it posts the result to
+// the window that opened it (postMessage) and closes. Falls back to plain text
+// if it wasn't opened as a popup.
+func writeCallbackHTML(w http.ResponseWriter, ok bool, detail string) {
+	payload, _ := json.Marshal(map[string]any{
+		"source":  "upstox-oauth",
+		"success": ok,
+		"detail":  detail,
+	})
+	msg := "Upstox login complete — you can close this window."
+	if !ok {
+		msg = "Upstox login failed: " + detail
+	}
+	html := fmt.Sprintf(`<!doctype html><meta charset="utf-8"><title>Upstox login</title>
+<body style="font-family:system-ui;padding:2rem">%s
+<script>
+try { if (window.opener) { window.opener.postMessage(%s, "*"); } } catch (e) {}
+setTimeout(function(){ try { window.close(); } catch (e) {} }, 800);
+</script></body>`, htmlEscape(msg), string(payload))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, html)
+}
+
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(s)
+}
+
+// ── Kotak handler ────────────────────────────────────────────────────────────
+
+// handleKotakAutoLogin logs a Kotak NEO account in with the fully-headless
+// Login-with-TOTP flow (tradeApiLogin → tradeApiValidate). Credentials come from
+// the account row. Body: {accessToken, mobileNumber, ucc, mpin, totpSecret}.
+func (s *Server) handleKotakAutoLogin(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req kotak.Creds
+	decodeReq(body, &req)
+	return s.kotak.AutoLogin(ctx, req)
+}
+
+// handleAccounts loads (GET) or saves (POST) the broker accounts in Supabase.
+// When Supabase isn't configured it replies {status:true, enabled:false} so the
+// frontend knows to use its local IndexedDB store instead.
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, 200, map[string]any{"status": true, "enabled": false, "accounts": []any{}})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		// Optional ?broker=Kotak → only that broker's accounts; empty → all.
+		broker := r.URL.Query().Get("broker")
+		accounts, err := s.store.List(r.Context(), broker)
+		if err != nil {
+			writeJSON(w, 500, errBody(err))
+			return
+		}
+		writeJSON(w, 200, map[string]any{"status": true, "enabled": true, "broker": broker, "accounts": accounts})
+	case http.MethodPost:
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		var req struct {
+			// Optional broker scope: when set, only that broker's rows are
+			// replaced, leaving other brokers' accounts untouched.
+			Broker   string              `json:"broker"`
+			Accounts []supastore.Account `json:"accounts"`
+		}
+		_ = json.Unmarshal(raw, &req)
+		if err := s.store.Replace(r.Context(), req.Accounts, req.Broker); err != nil {
+			writeJSON(w, 500, errBody(err))
+			return
+		}
+		writeJSON(w, 200, map[string]any{"status": true, "enabled": true, "broker": req.Broker, "saved": len(req.Accounts)})
+	default:
+		writeJSON(w, 405, map[string]any{"status": false, "message": "Method not allowed"})
+	}
 }
 
 // serveSSE runs the shared Server-Sent-Events loop against any feed exposing

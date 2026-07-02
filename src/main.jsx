@@ -27,6 +27,8 @@ const defaultClients = [
     apiSecret: '',
     totpSecret: '',
     pin: '',
+    phone: '',
+    autoLogin: false,
     historicalApi: false,
     sqoffTime: '15:16',
     loggedIn: false,
@@ -50,6 +52,8 @@ const defaultClients = [
     apiSecret: '',
     totpSecret: '',
     pin: '',
+    phone: '',
+    autoLogin: false,
     historicalApi: false,
     sqoffTime: '00:00',
     loggedIn: false,
@@ -78,14 +82,37 @@ function App() {
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [demoMode, setDemoMode] = useState(false);
   const [backendUrl, setBackendUrl] = useState('/api/angel/auto-login');
+  const [saveMsg, setSaveMsg] = useState('');
   const hydrated = useRef(false);
 
-  // Load saved clients from IndexedDB once on mount; fall back to the
-  // older IndexedDB/localStorage stores if this is a first run.
+  // Set once Supabase provided the accounts, so the auto-login-on-open effect
+  // fires only for a Supabase-backed load (not local-only runs).
+  const supabaseLoaded = useRef(false);
+
+  async function loadSupabaseClients() {
+    const res = await fetch('/api/accounts');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
+    if (!body.enabled || !Array.isArray(body.accounts) || !body.accounts.length) return null;
+    return body.accounts.map((a) => ({ ...defaultClients[0], ...a, status: 'Idle', loggedIn: false, session: null }));
+  }
+
+  // Load saved clients on mount. Priority: Supabase (if the backend has it
+  // configured) → local IndexedDB → legacy stores. Supabase is the shared source
+  // of truth so opening the app on any machine restores the same accounts.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let loaded = await loadClients();
+      let loaded = null;
+      try {
+        loaded = await loadSupabaseClients();
+        if (loaded?.length) {
+          supabaseLoaded.current = true;
+        }
+      } catch (e) {
+        /* Supabase not reachable — fall back to local storage below. */
+      }
+      if (!loaded?.length) loaded = await loadClients();
       if (!loaded?.length) loaded = await migrateLegacyClients();
       if (!cancelled && loaded?.length) setClients(loaded);
       if (!cancelled) hydrated.current = true;
@@ -143,20 +170,47 @@ function App() {
   }
 
   async function runAutoLogin() {
+    let loginClients = clients;
+    if (!demoMode) {
+      try {
+        const fresh = await loadSupabaseClients();
+        if (fresh?.length) {
+          loginClients = fresh;
+          supabaseLoaded.current = true;
+          setClients(fresh);
+          setSaveMsg(`Loaded ${fresh.length} account(s) from Supabase`);
+          setTimeout(() => setSaveMsg(''), 3000);
+        }
+      } catch (error) {
+        setSaveMsg(`Supabase load failed: ${error.message}`);
+        setTimeout(() => setSaveMsg(''), 4000);
+      }
+    }
+
     const targetIndexes = selectedClientIndexes.length
       ? selectedClientIndexes
-      : clients.map((client, index) => (client.enabled ? index : null)).filter((index) => index !== null);
+      : loginClients.map((client, index) => (client.enabled ? index : null)).filter((index) => index !== null);
 
     if (!targetIndexes.length) return;
 
     for (const index of targetIndexes) {
-      const client = clients[index];
+      const client = loginClients[index];
       if (!client?.enabled) continue;
-      if (client.loggedIn && (demoMode || client.session?.jwtToken)) continue;
+      const hasLiveToken = client.session?.jwtToken || client.session?.accessToken || client.session?.tradeToken;
+      if (client.loggedIn && (demoMode || hasLiveToken)) continue;
 
       updateClient(index, { status: 'Logging in...', loggedIn: false, netMargin: '0.00' });
       try {
-        const result = demoMode ? await demoLogin(client, index) : await liveLogin(client, backendUrl);
+        let result;
+        if (demoMode) {
+          result = await demoLogin(client, index);
+        } else if (client.broker === 'Upstox') {
+          result = await upstoxLogin(client);
+        } else if (client.broker === 'KotakNeoV3') {
+          result = await kotakLogin(client);
+        } else {
+          result = await liveLogin(client, backendUrl);
+        }
         updateClient(index, {
           loggedIn: true,
           status: demoMode ? 'Demo login' : `Logged in - ${result.sessionSource || 'live'}`,
@@ -181,6 +235,52 @@ function App() {
         });
       }
     }
+  }
+
+  // After accounts load FROM SUPABASE, auto-login all enabled accounts once —
+  // so opening the app in the browser restores creds and logs in hands-free.
+  const autoLoginFired = useRef(false);
+  useEffect(() => {
+    if (autoLoginFired.current) return;
+    if (!supabaseLoaded.current) return;      // only for Supabase-backed loads
+    if (!clients.some((c) => c.enabled)) return;
+    autoLoginFired.current = true;
+    runAutoLogin();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients]);
+
+  // saveToSupabase pushes the current table to Supabase so it's the shared
+  // source of truth. Only the credential/config fields are stored (not live
+  // session/margin state, which is per-run).
+  async function saveToSupabase() {
+    const accounts = clients.map((c) => ({
+      enabled: !!c.enabled,
+      alias: c.alias || '',
+      clientCode: c.clientCode || '',
+      broker: c.broker || 'Angel',
+      marketOrders: c.marketOrders || 'Allowed',
+      apiKey: c.apiKey || '',
+      apiSecret: c.apiSecret || '',
+      totpSecret: c.totpSecret || '',
+      pin: c.pin || '',
+      phone: c.phone || '',
+      autoLogin: !!c.autoLogin,
+      historicalApi: !!c.historicalApi,
+      sqoffTime: c.sqoffTime || '15:16',
+    }));
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
+      setSaveMsg(body.enabled ? `Saved ${body.saved} account(s) to Supabase` : 'Supabase not configured on the backend');
+    } catch (e) {
+      setSaveMsg(`Save failed: ${e.message}`);
+    }
+    setTimeout(() => setSaveMsg(''), 4000);
   }
 
   async function logoutClient(index) {
@@ -226,7 +326,9 @@ function App() {
           ))}
         </nav>
         <section className="actions" aria-label="Account actions">
+          {saveMsg && <span className="save-msg" style={{ alignSelf: 'center', fontSize: '0.85em', color: '#555' }}>{saveMsg}</span>}
           <button className="btn secondary" onClick={addClient} type="button">Add Client</button>
+          <button className="btn secondary" onClick={saveToSupabase} type="button" title="Save all accounts to Supabase">Save to Supabase</button>
           <button className="btn primary" onClick={runAutoLogin} type="button">Auto Login</button>
         </section>
       </header>
@@ -313,7 +415,7 @@ function UserSettings({
                   aria-label="Select all clients"
                 />
               </th>
-              {['Enable', 'Delete', 'Logout', 'Manual Square Off', 'Logged In', 'MTM (All)', 'MIS MTM', 'NRML MTM', 'Net Margin', 'Cash', 'Collateral', 'Payout Used', 'Market Orders', 'User Alias', 'User ID', 'Broker', 'API Key', 'API Secret', 'TOTP Secret', 'PIN', 'Historical API', 'SqOff Time', 'Status'].map((heading) => (
+              {['Enable', 'Delete', 'Logout', 'Manual Square Off', 'Logged In', 'MTM (All)', 'MIS MTM', 'NRML MTM', 'Net Margin', 'Cash', 'Collateral', 'Payout Used', 'Market Orders', 'User Alias', 'User ID', 'Broker', 'API Key', 'API Secret', 'TOTP Secret', 'PIN', 'Phone', 'Auto Login', 'Historical API', 'SqOff Time', 'Status'].map((heading) => (
                 <th key={heading}>{heading}</th>
               ))}
             </tr>
@@ -323,7 +425,11 @@ function UserSettings({
               <ClientRow
                 client={client}
                 index={index}
-                key={`${client.clientCode}-${index}`}
+                // Key on the stable row position only. Previously this included
+                // client.clientCode (the User ID field), so every keystroke in
+                // the User ID box changed the key → React remounted the whole
+                // row → the input lost focus and the table jumped/scrolled.
+                key={index}
                 onChange={onClientChange}
                 onDelete={onDeleteClient}
                 onLogout={onLogoutClient}
@@ -359,11 +465,13 @@ function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelect
       <td><Select value={client.marketOrders} onChange={(marketOrders) => onChange(index, { marketOrders })} options={['Allowed', 'Blocked']} /></td>
       <td><TextInput className="alias" value={client.alias} onChange={(alias) => onChange(index, { alias })} /></td>
       <td><TextInput className="client-code" value={client.clientCode} onChange={(clientCode) => onChange(index, { clientCode })} /></td>
-      <td><Select value={client.broker} onChange={(broker) => onChange(index, { broker })} options={['Angel', 'APITest', 'KotakNeoV3']} /></td>
+      <td><Select value={client.broker} onChange={(broker) => onChange(index, { broker })} options={['Angel', 'Upstox', 'APITest', 'KotakNeoV3']} /></td>
       <td><TextInput className={`api-key cred-box${client.apiKey ? ' filled' : ''}`} placeholder="Enter API key" value={client.apiKey} onChange={(apiKey) => onChange(index, { apiKey })} /></td>
       <td><TextInput className={`api-secret cred-box${client.apiSecret ? ' filled' : ''}`} placeholder="API secret" type="password" value={client.apiSecret} onChange={(apiSecret) => onChange(index, { apiSecret })} /></td>
       <td><TextInput className={`totp-secret cred-box${client.totpSecret ? ' filled' : ''}`} placeholder="TOTP secret" type="password" value={client.totpSecret} onChange={(totpSecret) => onChange(index, { totpSecret })} /></td>
       <td><TextInput className={`pin cred-box${client.pin ? ' filled' : ''}`} placeholder="PIN" type="password" value={client.pin} onChange={(pin) => onChange(index, { pin })} /></td>
+      <td><TextInput className={`phone cred-box${client.phone ? ' filled' : ''}`} placeholder="Mobile" value={client.phone} onChange={(phone) => onChange(index, { phone })} /></td>
+      <td><input checked={!!client.autoLogin} onChange={(event) => onChange(index, { autoLogin: event.target.checked })} type="checkbox" title="Auto Login (Upstox: mobile → TOTP → PIN, fully automated)" /></td>
       <td><input checked={client.historicalApi} onChange={(event) => onChange(index, { historicalApi: event.target.checked })} type="checkbox" /></td>
       <td><TextInput type="time" value={client.sqoffTime} onChange={(sqoffTime) => onChange(index, { sqoffTime })} /></td>
       <td className="status">{client.status || 'Idle'}</td>
@@ -2113,6 +2221,163 @@ async function liveLogin(client, backendUrl) {
     mtmAll: body.mtmAll ?? 0,
     misMtm: body.misMtm ?? 0,
     nrmlMtm: body.nrmlMtm ?? 0,
+  };
+}
+
+// upstoxLogin drives the Upstox OAuth flow. It first asks the backend to reuse a
+// same-day token; if none exists the backend returns {needsLogin, loginUrl}, so
+// we open that URL in a popup, wait for the /api/upstox/callback page to
+// postMessage success back, then re-run auto-login to pick up the fresh token.
+// Result shape matches liveLogin so runAutoLogin treats both brokers uniformly.
+async function upstoxLogin(client) {
+  // Per-account OAuth state so the backend can match the popup callback to the
+  // account's credentials (mirrors how Angel sends creds in the request body).
+  const state = `${client.clientCode || 'upstox'}-${Date.now()}`;
+  const attempt = async (userId = client.clientCode) => {
+    const response = await fetchWithTimeout('/api/upstox/auto-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        state,
+        // Upstox app credentials come straight from the account row — like Angel,
+        // the backend uses what the frontend sends (no env vars needed).
+        apiKey: client.apiKey || '',
+        apiSecret: client.apiSecret || '',
+        // When Auto Login is ticked the backend drives Upstox's login page with
+        // Selenium (mobile → TOTP → PIN, fully automated); otherwise it returns
+        // a loginUrl for the OAuth popup below.
+        autoLogin: !!client.autoLogin,
+        phone: client.phone || '',
+        pin: client.pin || '',
+        totpSecret: client.totpSecret || '',
+      }),
+    }, 150000, 'Upstox login timed out. Check Chrome/Selenium is installed and Upstox credentials are correct.');
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.message || `HTTP ${response.status}`);
+    return body;
+  };
+
+  let body = await attempt();
+  if (body.needsLogin && body.loginUrl) {
+    const userId = await openUpstoxPopup(body.loginUrl); // callback returns Upstox's canonical user_id
+    body = await attempt(userId || client.clientCode);   // token now stored server-side
+  }
+  if (body.status === false) throw new Error(body.message || 'Upstox login failed');
+
+  const eq = body.data?.equity || {};
+  const sessionSource = body.fundsAvailable === false
+    ? `${body.sessionSource || 'live'} (funds closed)`
+    : body.sessionSource;
+  return {
+    availableMargin: body.availableMargin ?? eq.available_margin ?? 0,
+    availableCash: eq.available_margin ?? 0,
+    collateral: eq.notional_cash ?? 0,
+    utilisedPayout: eq.used_margin ?? 0,
+    sessionSource,
+    session: body.session || null,
+    mtmAll: 0,
+    misMtm: 0,
+    nrmlMtm: 0,
+  };
+}
+
+// openUpstoxPopup opens the Upstox OAuth page and resolves once its callback
+// posts back a success message (or rejects on failure / if the user closes it).
+function openUpstoxPopup(loginUrl) {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(loginUrl, 'upstox-login', 'width=480,height=720');
+    if (!popup) {
+      reject(new Error('Popup blocked — allow popups for Upstox login'));
+      return;
+    }
+    const onMessage = (event) => {
+      const data = event.data;
+      if (!data || data.source !== 'upstox-oauth') return;
+      cleanup();
+      if (data.success) resolve(data.detail);
+      else reject(new Error(data.detail || 'Upstox login failed'));
+    };
+    const closedTimer = window.setInterval(() => {
+      if (popup.closed) {
+        cleanup();
+        reject(new Error('Login window closed before completing'));
+      }
+    }, 700);
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Upstox popup login timed out. Complete the popup login within 3 minutes or enable Auto Login with Phone, PIN and TOTP Secret.'));
+    }, 180000);
+    function cleanup() {
+      window.removeEventListener('message', onMessage);
+      window.clearInterval(closedTimer);
+      window.clearTimeout(timeout);
+      try { popup.close(); } catch (e) { /* already closed */ }
+    }
+    window.addEventListener('message', onMessage);
+  });
+}
+
+async function fetchWithTimeout(url, options, timeoutMs, message) {
+  const controller = new AbortController();
+  const id = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error(message || 'Request timed out');
+    throw error;
+  } finally {
+    window.clearTimeout(id);
+  }
+}
+
+// kotakLogin runs the Kotak NEO V3 fully-headless Login-with-TOTP flow. The
+// backend generates the TOTP from the stored secret and does tradeApiLogin →
+// tradeApiValidate server-side — no browser, no popup. Row fields map as:
+//   apiKey → NEO access token, phone → mobileNumber (with ISD),
+//   clientCode → UCC, pin → MPIN, totpSecret → TOTP secret.
+// Result shape matches liveLogin so runAutoLogin treats all brokers uniformly.
+async function kotakLogin(client) {
+  // Kotak's NEO access token can be typed in either the API KEY or API SECRET
+  // box (the column labels don't map 1:1 to Kotak), so accept whichever is set.
+  const accessToken = client.apiKey || client.apiSecret || '';
+  const payload = {
+    accessToken,
+    mobileNumber: client.phone || '',
+    ucc: client.clientCode || '',
+    mpin: client.pin || '',
+    totpSecret: client.totpSecret || '',
+  };
+  // Name the exact missing field(s) up front, so the user isn't left guessing
+  // which off-screen column is blank.
+  const labels = {
+    accessToken: 'API Key (Kotak access token)',
+    mobileNumber: 'Phone (with ISD, e.g. +91…)',
+    ucc: 'User ID (UCC)',
+    mpin: 'PIN (MPIN)',
+    totpSecret: 'TOTP Secret',
+  };
+  const missing = Object.keys(labels).filter((k) => !payload[k]);
+  if (missing.length) throw new Error(`Fill in: ${missing.map((k) => labels[k]).join(', ')}`);
+
+  const response = await fetch('/api/kotak/auto-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+
+  return {
+    availableMargin: body.availableMargin ?? 0,
+    availableCash: 0,
+    collateral: 0,
+    utilisedPayout: 0,
+    sessionSource: body.sessionSource,
+    session: body.session || null,
+    mtmAll: 0,
+    misMtm: 0,
+    nrmlMtm: 0,
   };
 }
 

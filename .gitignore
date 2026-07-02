@@ -4,3 +4,7 @@ scrip_master.json
 scrip_index.json
 dist/
 *.exe~
+.env
+.env.local
+*.local.ps1
+go-backend/scripts/upstox_fail_*

@@ -1,0 +1,4 @@
+# Upstox scripted-browser auto-login (see upstox_login.py).
+# Selenium 4.6+ bundles selenium-manager, which auto-downloads the matching
+# ChromeDriver — so only Chrome itself needs to be installed on the machine.
+selenium>=4.20.0
