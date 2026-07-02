@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "start": "node server.js"
+    "start": "cd go-backend && go run .",
+    "start:build": "go build -C go-backend -o angelone-backend.exe . && go-backend/angelone-backend.exe"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
@@ -16,7 +17,6 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.1",
-    "vite": "^8.1.0",
-    "ws": "^8.21.0"
+    "vite": "^8.1.0"
   }
 }

@@ -37,13 +37,13 @@ var segmentByMarketId = map[string]string{
 // fields (no live price — quotes/greeks come from separate calls, exactly like
 // Angel splits all-scrip-options and greeks).
 type ScripOption struct {
-	Token         string  `json:"token"`
-	TradingSymbol string  `json:"tradingSymbol"`
-	Strike        int     `json:"strike"`
-	OptionType    string  `json:"optionType"` // CE | PE
-	LotSize       int     `json:"lotSize"`
-	Expiry        string  `json:"expiry"`
-	Exchange      string  `json:"exchange"`
+	Token         string `json:"token"`
+	TradingSymbol string `json:"tradingSymbol"`
+	Strike        int    `json:"strike"`
+	OptionType    string `json:"optionType"` // CE | PE
+	LotSize       int    `json:"lotSize"`
+	Expiry        string `json:"expiry"`
+	Exchange      string `json:"exchange"`
 }
 
 // ScripOptionsReq mirrors Angel's query params.
@@ -87,9 +87,20 @@ func (m *MasterStore) AllScripOptions(ctx context.Context, req ScripOptionsReq) 
 	ce := map[int]contract{}
 	pe := map[int]contract{}
 	lotSize := 1
+	type fut struct {
+		token    string
+		expiryMs int64
+	}
+	var futs []fut
 	for i := range rows {
 		r := &rows[i]
-		if r.Name != symbol || r.Segment != segment || r.Expiry != expiry {
+		if r.Name != symbol || r.Segment != segment {
+			continue
+		}
+		if segment == "MCX" && strings.HasSuffix(r.Symbol, "FUT") {
+			futs = append(futs, fut{r.Token, parseExpiryMs(r.Expiry)})
+		}
+		if r.Expiry != expiry {
 			continue
 		}
 		strike := normalizeStrike(r.Strike, segment)
@@ -140,10 +151,21 @@ func (m *MasterStore) AllScripOptions(ctx context.Context, req ScripOptionsReq) 
 		}
 	}
 
-	// Spot source (index LTP token for NSE/BSE) so the caller can fetch a spot.
+	// Spot source mirrors the original Node backend: index LTP for NSE/BSE, and
+	// the nearest future for MCX commodities.
 	spotExchange, spotToken := "", ""
 	if pair, ok := spotTokens[symbol]; ok {
 		spotExchange, spotToken = pair[0], pair[1]
+	} else if len(futs) > 0 {
+		sort.Slice(futs, func(i, j int) bool { return futs[i].expiryMs < futs[j].expiryMs })
+		optMs := parseExpiryMs(expiry)
+		spotExchange, spotToken = segment, futs[0].token
+		for _, f := range futs {
+			if f.expiryMs >= optMs {
+				spotToken = f.token
+				break
+			}
+		}
 	}
 	// Flat list sorted by strike then CE before PE (stable, Angel-like order).
 	sort.SliceStable(scrips, func(i, j int) bool {

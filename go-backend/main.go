@@ -25,7 +25,8 @@ func main() {
 	client := angel.NewClient(cfg)
 	master := angel.NewMasterStore(cfg)
 	feed := angel.NewFeed(cfg)
-	api := httpapi.New(cfg, client, master, feed)
+	orderFeed := angel.NewOrderFeed(cfg)
+	api := httpapi.New(cfg, client, master, feed, orderFeed)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

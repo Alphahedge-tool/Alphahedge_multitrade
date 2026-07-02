@@ -67,6 +67,13 @@ const defaultClients = [
 
 function App() {
   const [activeTab, setActiveTab] = useState('settings');
+  // Tabs opened at least once. The Strategies tab hosts the option chain and its
+  // live WebSocket feed; once it's mounted we keep it mounted (just hidden) so
+  // switching tabs never tears the chain down and forces a full reload/re-login.
+  const [mountedTabs, setMountedTabs] = useState(() => new Set([activeTab]));
+  useEffect(() => {
+    setMountedTabs((prev) => (prev.has(activeTab) ? prev : new Set(prev).add(activeTab)));
+  }, [activeTab]);
   const [clients, setClients] = useState(defaultClients);
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [demoMode, setDemoMode] = useState(false);
@@ -239,20 +246,25 @@ function App() {
         />
       )}
 
-      {activeTab === 'strategies' && (
-        <Strategies
-          clients={clients}
-          demoMode={demoMode}
-          onClientSession={(index, session) => updateClient(index, { session })}
-        />
+      {mountedTabs.has('strategies') && (
+        <div className="tab-keepalive" style={{ display: activeTab === 'strategies' ? 'contents' : 'none' }}>
+          <Strategies
+            clients={clients}
+            demoMode={demoMode}
+            onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
+          />
+        </div>
       )}
 
-      {activeTab === 'orders' && (
-        <OrderBookView
-          clients={clients}
-          demoMode={demoMode}
-          onClientSession={(index, session) => updateClient(index, { session })}
-        />
+      {mountedTabs.has('orders') && (
+        <div className="tab-keepalive" style={{ display: activeTab === 'orders' ? 'contents' : 'none' }}>
+          <OrderBookView
+            clients={clients}
+            demoMode={demoMode}
+            active={activeTab === 'orders'}
+            onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
+          />
+        </div>
       )}
 
       {activeTab !== 'settings' && activeTab !== 'strategies' && activeTab !== 'orders' && (
@@ -359,10 +371,17 @@ function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelect
   );
 }
 
-function OrderBookView({ clients, demoMode, onClientSession }) {
+function OrderBookView({ clients, demoMode, onClientSession, active = true }) {
   const [bookTab, setBookTab] = useState('history');
   const [clientIndex, setClientIndex] = useState(0);
-  const [rows, setRows] = useState([]);
+  const [orderRows, setOrderRows] = useState([]);
+  const [tradeRows, setTradeRows] = useState([]);
+  // Which books we've already fetched for the CURRENT account. The first fetch
+  // shows a spinner; after that Open <-> History (which share the order book)
+  // just filter the cached rows. New orders arrive via the 3 s silent poll.
+  const loadedRef = useRef({ orders: false, trades: false });
+  // Guards the poll so a slow fetch can't pile up overlapping requests.
+  const pollingRef = useRef(false);
   const [status, setStatus] = useState('Select a logged-in account');
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -379,27 +398,89 @@ function OrderBookView({ clients, demoMode, onClientSession }) {
     }
   }, [loggedInIndexes, clientIndex]);
 
+  // Switching account (or demo mode) invalidates the cached books so the new
+  // account is fetched (and its token verified) once.
   useEffect(() => {
-    if (selectedClient?.loggedIn && !demoMode) loadBook(bookTab);
-  }, [bookTab, clientIndex, selectedClient?.session?.jwtToken, demoMode]);
+    loadedRef.current = { orders: false, trades: false };
+    setOrderRows([]);
+    setTradeRows([]);
+  }, [clientIndex, demoMode]);
 
-  async function loadBook(nextTab = bookTab) {
+  // Live book via PUSH: first paint fetches (with spinner), then Angel's
+  // order-status WebSocket (relayed through our SSE) pushes an event the instant
+  // an order is placed/executed/cancelled/modified — we refresh the rows on that
+  // event. No fixed polling. A slow 20 s safety refresh covers a missed event or
+  // a briefly dropped socket. Runs only while the tab is visible (active).
+  useEffect(() => {
+    if (!active || !selectedClient?.loggedIn || demoMode) return;
+    const which = bookTab === 'trades' ? 'trades' : 'orders';
+    if (!loadedRef.current[which]) loadBook(which); // first paint for this book
+
+    const refresh = () => {
+      if (pollingRef.current) return; // don't overlap a still-running fetch
+      pollingRef.current = true;
+      // An order change can affect BOTH books (an execution flips the order to
+      // "complete" AND creates a trade), so invalidate the other book's cache —
+      // it reloads fresh when next viewed while we refresh the visible one now.
+      loadedRef.current[which === 'trades' ? 'orders' : 'trades'] = false;
+      loadBook(which, true, true).finally(() => { pollingRef.current = false; });
+    };
+    // Debounce bursts (an order fill can emit several events in a row).
+    let debounce = null;
+    const nudge = () => { clearTimeout(debounce); debounce = setTimeout(refresh, 400); };
+
+    const session = selectedClient.session;
+    const creds = session?.jwtToken && session?.feedToken ? {
+      jwtToken: session.jwtToken,
+      feedToken: session.feedToken,
+      apiKey: selectedClient.apiKey,
+      clientCode: selectedClient.clientCode,
+    } : null;
+
+    const subscribe = () => {
+      if (!creds) return;
+      fetch('/api/angel/order-subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials: creds }),
+      }).catch(() => {});
+    };
+
+    let es = null;
+    if (creds) {
+      subscribe();
+      es = new EventSource('/api/angel/order-stream');
+      es.addEventListener('order', nudge);   // an order changed → refresh the book
+      es.onopen = subscribe;                  // (re)assert the watch on (re)connect
+    }
+
+    const safety = setInterval(refresh, 20000); // fallback if an event is missed
+
+    return () => {
+      clearTimeout(debounce);
+      clearInterval(safety);
+      if (es) es.close();
+    };
+  }, [active, bookTab, clientIndex, selectedClient?.loggedIn, selectedClient?.session?.jwtToken, demoMode]);
+
+  async function loadBook(which = bookTab === 'trades' ? 'trades' : 'orders', force = false, silent = false) {
     const client = clients[clientIndex];
     if (!client?.loggedIn) {
-      setRows([]);
-      setStatus('Log in an account first');
+      if (!silent) setStatus('Log in an account first');
       return;
     }
     if (demoMode) {
-      setRows([]);
-      setStatus('Disable demo mode for live order book');
+      if (!silent) setStatus('Disable demo mode for live order book');
       return;
     }
+    if (loadedRef.current[which] && !force) return; // already have it — don't re-check
 
-    setLoading(true);
-    setStatus(nextTab === 'trades' ? 'Loading trade book...' : 'Loading order book...');
+    if (!silent) {
+      setLoading(true);
+      setStatus(which === 'trades' ? 'Loading trade book...' : 'Loading order book...');
+    }
     try {
-      const response = await fetch(nextTab === 'trades' ? '/api/angel/trade-book' : '/api/angel/order-book', {
+      const response = await fetch(which === 'trades' ? '/api/angel/trade-book' : '/api/angel/order-book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
@@ -407,27 +488,32 @@ function OrderBookView({ clients, demoMode, onClientSession }) {
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
       if (body.session?.jwtToken) onClientSession?.(clientIndex, body.session);
-      const nextRows = nextTab === 'trades' ? body.trades || [] : body.orders || [];
-      setRows(nextRows);
-      setStatus(`${nextRows.length} ${nextTab === 'trades' ? 'trades' : 'orders'} loaded`);
+      const nextRows = which === 'trades' ? body.trades || [] : body.orders || [];
+      if (which === 'trades') setTradeRows(nextRows);
+      else setOrderRows(nextRows);
+      loadedRef.current[which] = true;
+      setStatus(`${nextRows.length} ${which === 'trades' ? 'trades' : 'orders'} loaded`);
     } catch (error) {
-      setRows([]);
-      setStatus(error.message || 'Book load failed');
+      if (!silent) {
+        loadedRef.current[which] = false; // visible failure — allow a retry
+        setStatus(error.message || 'Book load failed');
+      }
+      // Silent poll failures keep the last good rows on screen (no flicker); the
+      // next poll retries, and the book call itself re-logins on a dead token.
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
   const visibleRows = useMemo(() => {
-    const source = bookTab === 'open'
-      ? rows.filter((row) => isOpenOrder(row))
-      : rows;
+    const base = bookTab === 'trades' ? tradeRows : orderRows;
+    const source = bookTab === 'open' ? base.filter((row) => isOpenOrder(row)) : base;
     const needle = query.trim().toLowerCase();
     if (!needle) return source;
     return source.filter((row) => JSON.stringify(row).toLowerCase().includes(needle));
-  }, [rows, bookTab, query]);
+  }, [orderRows, tradeRows, bookTab, query]);
   const summary = useMemo(() => bookSummary(visibleRows), [visibleRows]);
-  const orderHistoryCount = bookTab === 'trades' ? rows.length : rows.filter((row) => !isOpenOrder(row)).length;
+  const orderHistoryCount = useMemo(() => orderRows.filter((row) => !isOpenOrder(row)).length, [orderRows]);
   const columns = useMemo(() => bookDisplayColumns(bookTab), [bookTab]);
 
   return (
@@ -461,7 +547,7 @@ function OrderBookView({ clients, demoMode, onClientSession }) {
             pillClass: client.loggedIn ? 'pill-idx' : 'pill-eq',
           }))}
         />
-        <button className="btn secondary" disabled={loading} type="button" onClick={() => loadBook()}>
+        <button className="btn secondary" disabled={loading} type="button" onClick={() => loadBook(undefined, true)}>
           {loading ? 'Loading' : 'Refresh'}
         </button>
       </div>
@@ -533,7 +619,7 @@ function renderBookCell(row, column) {
   if (column === 'stock') return <BookStockCell row={row} />;
   if (column === 'product') return <BookProductCell row={row} />;
   if (column === 'qty') return <BookQtyCell row={row} />;
-  if (column === 'placedPrice') return formatOrderPrice(row.price, row.ordertype);
+  if (column === 'placedPrice') return formatOrderPrice(row);
   if (column === 'executedPrice') return <span className="book-price-strong">{formatBookPrice(row.averageprice || row.fillprice)}</span>;
   if (column === 'ltp') return <span className="book-ltp">{formatBookPrice(row.ltp || row.close || row.averageprice || row.fillprice)}</span>;
   if (column === 'status') return <BookStatusCell row={row} />;
@@ -564,10 +650,12 @@ function BookStockCell({ row }) {
 function BookProductCell({ row }) {
   const side = String(row.transactiontype || row.transaction_type || '').toUpperCase();
   const product = compactProductTag(row.producttype || row.product_type || '-');
+  const orderType = orderTypeTag(row.ordertype || row.orderType);
   return (
     <div className="book-product-cell">
       {side && <span className={`book-tag side ${side === 'BUY' ? 'buy' : 'sell'}`}>{side}</span>}
       <span className="book-tag product">{product}</span>
+      {orderType && <span className={`book-tag ordertype ${orderType.toLowerCase().replace(/[^a-z]/g, '')}`}>{orderType}</span>}
     </div>
   );
 }
@@ -678,10 +766,28 @@ function monthName(month) {
   return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][month - 1] || '';
 }
 
-function formatOrderPrice(price, orderType) {
-  const type = String(orderType || '').toUpperCase();
-  if (type === 'MARKET' || type === 'MKT') return 'MKT';
-  return formatBookPrice(price);
+// Placed price for an order row, matching what Angel's own order book shows:
+//   • LIMIT / SL-LIMIT / SL-MARKET → the order `price` (Angel shows this even for
+//     SL-Market, e.g. price 11 while the trigger is 10)
+//   • only a trigger, no price → the `triggerprice`
+//   • plain MARKET (no price/trigger) → "MKT"
+function formatOrderPrice(row) {
+  const type = String(row?.ordertype || row?.orderType || '').toUpperCase();
+  const price = Number(row?.price) || 0;
+  const trigger = Number(row?.triggerprice ?? row?.triggerPrice ?? row?.trigger_price) || 0;
+  if (price > 0) return formatBookPrice(price);
+  if (trigger > 0) return formatBookPrice(trigger);
+  return type && type !== 'MARKET' && type !== 'MKT' ? '-' : 'MKT';
+}
+
+// Short tag for an order's type, e.g. STOPLOSS_MARKET → "SL-M", LIMIT → "LMT".
+function orderTypeTag(value) {
+  const t = String(value || '').toUpperCase();
+  if (t === 'STOPLOSS_MARKET') return 'SL-M';
+  if (t === 'STOPLOSS_LIMIT') return 'SL';
+  if (t === 'LIMIT') return 'LMT';
+  if (t === 'MARKET') return 'MKT';
+  return t.replace('STOPLOSS_', 'SL-') || '';
 }
 
 function formatBookPrice(value) {
@@ -706,17 +812,35 @@ function formatBookCell(value, column = '') {
   return String(value);
 }
 
+// An order is "open" (still working) when it's neither filled nor killed. Angel's
+// order book uses `status`/`orderstatus` strings; we key off those, but also fall
+// back to unfilled shares so a working order still shows even if the status text
+// is blank/unexpected. Angel's non-terminal states include: open, open pending,
+// trigger pending, validation pending, modified, modify pending, after market
+// order req received.
 function isOpenOrder(row) {
-  const state = String(row?.status || row?.orderstatus || '').toUpperCase();
-  return state && !['COMPLETE', 'COMPLETED', 'REJECTED', 'CANCELLED', 'CANCELED'].includes(state);
+  const state = String(row?.status ?? row?.orderstatus ?? '').trim().toLowerCase();
+  const terminal = ['complete', 'completed', 'executed', 'rejected', 'cancelled', 'canceled', 'cancelled amo'];
+  if (terminal.includes(state)) return false;
+  // Explicit working/pending states.
+  if (/(open|pending|trigger|modif|validation|received|placed)/.test(state)) return true;
+  // Fallback: unknown/blank status but shares still unfilled → treat as open.
+  const unfilled = Number(row?.unfilledshares ?? row?.unfilledshare);
+  if (Number.isFinite(unfilled) && unfilled > 0) return true;
+  // Any other non-empty, non-terminal status: keep showing it (permissive).
+  return state !== '';
 }
 
 function bookSummary(rows) {
   return rows.reduce((acc, row) => {
+    // A "transaction" is an EXECUTED fill. Skip cancelled / rejected / open
+    // (unfilled) orders so Total Buy/Sell reflect what actually traded — count
+    // and value both come from the filled quantity at its average price.
+    const filled = Number(row.filledshares ?? row.fillshares ?? 0) || 0;
+    if (filled <= 0) return acc;
     const side = String(row.transactiontype || row.transaction_type || '').toUpperCase();
-    const qty = Number(row.quantity || row.filledshares || row.fillshares || 0) || 0;
     const price = Number(row.averageprice || row.fillprice || row.price || 0) || 0;
-    const value = qty * price;
+    const value = filled * price;
     if (side === 'BUY') {
       acc.buyCount += 1;
       acc.buyValue += value;
@@ -727,6 +851,19 @@ function bookSummary(rows) {
     }
     return acc;
   }, { buyCount: 0, sellCount: 0, buyValue: 0, sellValue: 0 });
+}
+
+// Fallback strike interval, used only when the live strike ladder can't be
+// loaded (offline / not logged in). The chain ladder is always preferred.
+function strikeStepFor(symbol) {
+  const s = String(symbol || '').toUpperCase();
+  if (s === 'BANKNIFTY' || s === 'SENSEX' || s === 'BANKEX') return 100;
+  return 50;
+}
+
+function marginOrderType(value) {
+  const type = String(value || '').toUpperCase();
+  return type === 'LIMIT' || type === 'SL' ? 'LIMIT' : 'MARKET';
 }
 
 function Strategies({ clients, demoMode, onClientSession }) {
@@ -919,6 +1056,32 @@ function Strategies({ clients, demoMode, onClientSession }) {
     }
   }, [loadExpiryChain]);
 
+  // Strike stepper for a leg's ▲/▼ arrows: move to the ADJACENT real strike in
+  // this symbol+expiry's ladder — NOT a fixed ±50, which is wrong for BANKNIFTY/
+  // SENSEX (100 apart) and most stocks, where +50 lands between valid strikes and
+  // snaps back. Uses the cached chain (loading it if needed); if the ladder can't
+  // be fetched, falls back to a per-symbol gap.
+  const stepStrike = useCallback(async (id, dir) => {
+    const leg = legsRef.current.find((l) => l.id === id);
+    if (!leg) return;
+    const current = Number(leg.strike) || 0;
+    const key = `${leg.symbol}|${leg.expiry}`;
+    let chain = chainCache.current[key];
+    if (!chain) chain = await loadExpiryChain(leg.symbol, leg.expiry).catch(() => null);
+    const strikes = chain?.strikes;
+    let target;
+    if (strikes?.length) {
+      // strikes are ascending: first strike above / last strike below the current.
+      target = dir > 0 ? strikes.find((s) => s > current) : [...strikes].reverse().find((s) => s < current);
+      if (target == null) return; // already at the top/bottom of the ladder
+    } else {
+      const step = strikeStepFor(leg.symbol);
+      target = Math.max(0, current + dir * step);
+      if (target === current) return;
+    }
+    resolveLegContract(id, { strike: target });
+  }, [loadExpiryChain, resolveLegContract]);
+
   // Manual margin/charges refresh. Snapshots the latest live LTP into each leg
   // (so MARKET legs re-price at the current tick) and forces a recompute. Margin
   // deliberately does NOT follow every tick — the user pulls a fresh figure here.
@@ -986,7 +1149,16 @@ function Strategies({ clients, demoMode, onClientSession }) {
 
   // Price sent to Angel per leg: the typed price for limit legs, live LTP for
   // market legs. Shared by both the margin and charge calculators.
-  const priceFor = (leg) => (leg.priceType === 'LIMIT' ? Number(leg.price) || 0 : Number(leg.ltp) || 0);
+  const priceFor = (leg) => {
+    const orderType = String(leg.priceType || 'MARKET').toUpperCase();
+    if (orderType === 'LIMIT' || orderType === 'SL') return Number(leg.price) || 0;
+    // MARKET / SL-M: captured ltp, else the LATEST live tick, else the day's close. The
+    // tick is read from a REF (not state) so margin does NOT recompute on every
+    // tick — it's only consulted when the basket changes or the user hits
+    // Refresh, which is enough to give a correct figure instead of 0.
+    const tick = leg.token != null ? liveTicksRef.current[leg.token] : null;
+    return Number(leg.ltp) || Number(tick?.ltp) || Number(leg.close) || 0;
+  };
 
   // Fields that change the calculated figures. Both margin and charges depend on
   // token/qty/side/product/price; charges also need the per-leg price even on
@@ -995,7 +1167,7 @@ function Strategies({ clients, demoMode, onClientSession }) {
   const calcKey = useMemo(
     () => JSON.stringify(legs.map((leg) => [
       leg.token, leg.exchange, leg.qty, leg.lotSize, leg.action, leg.product,
-      leg.priceType, priceFor(leg),
+      leg.priceType, leg.triggerPrice, priceFor(leg),
     ])),
     [legs],
   );
@@ -1028,9 +1200,10 @@ function Strategies({ clients, demoMode, onClientSession }) {
         qty: leg.qty,
         lotSize: leg.lotSize,
         price: priceFor(leg),
+        triggerPrice: Number(leg.triggerPrice) || 0,
         tradeType: leg.action,
         productType: leg.product,
-        orderType: leg.priceType === 'LIMIT' ? 'LIMIT' : 'MARKET',
+        orderType: marginOrderType(leg.priceType),
       }));
 
       const post = (url) => fetch(url, {
@@ -1080,8 +1253,60 @@ function Strategies({ clients, demoMode, onClientSession }) {
     };
   }, [calcKey, marginClient, marginNonce]);
 
+  const placeBasket = useCallback(async () => {
+    const client = marginClientRef.current;
+    if (!client?.session?.jwtToken) throw new Error('Load the option chain on a logged-in account first');
+    const selected = legsRef.current.filter((leg) => leg.selected !== false);
+    if (!selected.length) throw new Error('Select at least one order');
+
+    const legPayload = selected.map((leg) => ({
+      token: leg.token,
+      symbol: leg.tradingSymbol,
+      exchange: leg.exchange,
+      qty: leg.qty,
+      lotSize: leg.lotSize,
+      price: priceFor(leg),
+      triggerPrice: Number(leg.triggerPrice) || 0,
+      tradeType: leg.action,
+      productType: leg.product,
+      orderType: leg.priceType || 'MARKET',
+    }));
+
+    const response = await fetch('/api/angel/place-basket', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client, legs: legPayload }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (body.session?.jwtToken) {
+      setMarginClient((current) => (current ? { ...current, session: body.session } : current));
+      const clientIndex = clients.findIndex((item) => item.clientCode === client.clientCode);
+      if (clientIndex >= 0) onClientSession?.(clientIndex, body.session);
+    }
+    if (!response.ok) throw new Error(body.message || `HTTP ${response.status}`);
+    return body;
+  }, [clients, onClientSession]);
+
+  // Basket visibility: hidden until the user adds a leg (clicks B/S on the
+  // chain), then it pops up; when the last leg is removed it pops back down.
+  // `basketRender` keeps it mounted through the closing animation, `basketOpen`
+  // drives the CSS pop state.
+  const hasLegs = legs.length > 0;
+  const [basketRender, setBasketRender] = useState(hasLegs);
+  const [basketOpen, setBasketOpen] = useState(hasLegs);
+  useEffect(() => {
+    if (hasLegs) {
+      setBasketRender(true);
+      const id = requestAnimationFrame(() => setBasketOpen(true)); // next frame → animate in
+      return () => cancelAnimationFrame(id);
+    }
+    setBasketOpen(false); // play the pop-down, then unmount after it finishes
+    const t = setTimeout(() => setBasketRender(false), 260);
+    return () => clearTimeout(t);
+  }, [hasLegs]);
+
   return (
-    <section className="strategies-view">
+    <section className={`strategies-view${basketRender ? '' : ' no-basket'}`}>
       <OptionChainPanel
         clients={clients}
         demoMode={demoMode}
@@ -1091,20 +1316,26 @@ function Strategies({ clients, demoMode, onClientSession }) {
         onExpiryIndex={setExpiryIndex}
         onLiveTicks={setLiveTicks}
       />
-      <Basket
-        legs={legs}
-        name="MY BASKET"
-        margin={margin}
-        charges={charges}
-        expiryIndex={expiryIndex}
-        liveTicks={liveTicks}
-        onUpdateLeg={updateLeg}
-        onResolveLeg={resolveLegContract}
-        onRemoveLeg={removeLeg}
-        onRefreshMargin={refreshMargin}
-        onClear={clearLegs}
-        onClose={clearLegs}
-      />
+      {basketRender && (
+        <Basket
+          legs={legs}
+          name="MY BASKET"
+          className={basketOpen ? 'is-open' : 'is-closing'}
+          margin={margin}
+          charges={charges}
+          expiryIndex={expiryIndex}
+          liveTicks={liveTicks}
+          onUpdateLeg={updateLeg}
+          onResolveLeg={resolveLegContract}
+          onStepStrike={stepStrike}
+          onAddLeg={addLeg}
+          onRemoveLeg={removeLeg}
+          onRefreshMargin={refreshMargin}
+          onPlaceBasket={placeBasket}
+          onClear={clearLegs}
+          onClose={clearLegs}
+        />
+      )}
     </section>
   );
 }
@@ -1209,18 +1440,30 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
     }
   }
 
+  // Can this account authenticate? Either it already holds a live JWT, or it has
+  // the credentials (API key + PIN + TOTP) for a fresh login.
+  const canAuth = (c) => !!(c?.apiKey && (c.session?.jwtToken || (c.pin && c.totpSecret)));
+
   async function loadChain() {
-    const client = clients[clientIndex];
-    if (!client) {
-      setStatus('Select a client');
-      return;
-    }
-    if (!client.loggedIn) {
-      setStatus('Log in an account first - option chain needs a live logged-in account');
-      return;
-    }
     if (demoMode) {
       setStatus('Disable demo mode for live option chain');
+      return;
+    }
+    // Drive the chain with the selected account if it can authenticate; else fall
+    // back to the first account that can, so the chain works without forcing the
+    // user to hand-pick/pre-login an account on the Settings tab.
+    let index = clientIndex;
+    let client = clients[index];
+    if (!canAuth(client)) {
+      const found = clients.findIndex(canAuth);
+      if (found >= 0) {
+        index = found;
+        client = clients[found];
+        setClientIndex(found);
+      }
+    }
+    if (!client) {
+      setStatus('Select a client');
       return;
     }
     if (!client.apiKey) {
@@ -1233,6 +1476,26 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
     }
 
     setLoading(true);
+    // ── Phase 0: ensure a LIVE SESSION. The chain's live LTP comes from the
+    // WebSocket feed, which needs a feedToken — and that only exists once the
+    // account is logged in. If it isn't yet, call auto-login on demand here (this
+    // is the login the feed depends on), persist the session, then carry on.
+    if (!client.session?.jwtToken) {
+      setStatus('Logging in...');
+      try {
+        const result = await liveLogin(client, '/api/angel/auto-login');
+        const session = result.session || null;
+        if (!session?.jwtToken) throw new Error('no session returned');
+        onClientSession(index, session);          // persist up to App (sets loggedIn)
+        client = { ...client, loggedIn: true, session };
+      } catch (error) {
+        setLoading(false);
+        autoLoadRef.current = '';                  // allow a retry once creds/session change
+        setStatus(`Login failed: ${error.message || 'auto-login'}`);
+        return;
+      }
+    }
+
     setStatus('Loading option chain...');
     try {
       // ── Phase 1: instant skeleton from OUR scrip master (no Angel round-trip
@@ -1263,7 +1526,7 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
 
       // Render the skeleton right away (OI/LTP arrays start empty; live fills them).
       setChain(skeleton);
-      onClientSession(clientIndex, liveSession);
+      onClientSession(index, liveSession);
       onMarginContext?.(liveClient);
       setStatus(`Loaded ${skeleton.symbol} ${skeleton.expiry} (${skeleton.count} scrips)`);
       startLiveFeed(skeleton);
@@ -1297,6 +1560,7 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
         })
         .catch(() => { /* prices are best-effort; live feed still fills them */ });
     } catch (error) {
+      autoLoadRef.current = ''; // let the auto-loader retry after the transient failure
       setStatus(error.message || 'Option chain failed');
     } finally {
       setLoading(false);
@@ -1304,16 +1568,16 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
   }
 
   useEffect(() => {
-    const client = clients[clientIndex];
     if (!symbol || !expiry || loading || demoMode) return;
-    if (!client?.loggedIn || !client.apiKey) return;
-    if (!client.session?.jwtToken && (!client.pin || !client.totpSecret)) return;
+    // As long as SOME account can authenticate, auto-load — loadChain logs in on
+    // demand, so the user no longer has to pre-login on the Settings tab first.
+    if (!clients.some(canAuth)) return;
 
-    const key = `${clientIndex}|${symbol}|${expiry}`;
+    const key = `${symbol}|${expiry}`;
     if (autoLoadRef.current === key) return;
     autoLoadRef.current = key;
     loadChain();
-  }, [clients, clientIndex, symbol, expiry, loading, demoMode]);
+  }, [clients, symbol, expiry, loading, demoMode]);
 
   // Keep refs current so onTrade (memoized with no deps) reads live values.
   symbolRef.current = symbol;
@@ -1437,13 +1701,22 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
     const price = liveSpot?.ltp;
     const strikes = chain?.strikes;
     if (!price || !strikes?.length) return null;
-    return strikes.reduce((best, s) => (Math.abs(s - price) < Math.abs(best - price) ? s : best), strikes[0]);
+    return nearestStrike(strikes, price);
   }, [liveSpot, chain]);
+
+  const snapshotAtm = useMemo(() => {
+    const value = Number(chain?.atm || 0);
+    if (value > 0) return value;
+    const spot = Number(chain?.spot || 0);
+    if (spot > 0 && chain?.strikes?.length) return nearestStrike(chain.strikes, spot);
+    return null;
+  }, [chain]);
 
   // The ATM the table renders against — live value when the spot feed is up,
   // else the snapshot from load. Drives the ATM box, the highlighted ATM row and
   // the ITM shading, so all three shift together as the underlying moves.
-  const atm = liveAtm ?? chain?.atm ?? 0;
+  const atm = liveAtm ?? snapshotAtm;
+  const hasAtm = atm != null && atm > 0;
 
   return (
     <aside className="option-chain-panel">
@@ -1512,10 +1785,10 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
       <div className="chain-meta">
         <span>Spot
           <strong className={liveSpot?.dir ? `spot-flash-${liveSpot.dir}` : ''} key={`spot-${liveSpot?.at || 0}`}>
-            {formatMoney(liveSpot?.ltp ?? chain?.spot ?? 0)}
+            {formatSpot(liveSpot?.ltp ?? chain?.spot)}
           </strong>
         </span>
-        <span>ATM <strong className={liveAtm && chain?.atm && liveAtm !== chain.atm ? 'atm-shifted' : ''}>{atm}</strong></span>
+        <span>ATM <strong className={liveAtm && snapshotAtm && liveAtm !== snapshotAtm ? 'atm-shifted' : ''}>{hasAtm ? atm : '-'}</strong></span>
         <span>PCR <strong>{Number(chain?.pcr || 0).toFixed(2)}</strong></span>
       </div>
 
@@ -1560,9 +1833,9 @@ const OptionChainPanel = React.memo(function OptionChainPanel({ clients, demoMod
                 <ChainRow
                   key={strike}
                   strike={strike}
-                  isAtm={strike === atm}
-                  callItm={strike < atm}
-                  putItm={strike > atm}
+                  isAtm={hasAtm && strike === atm}
+                  callItm={hasAtm && strike < atm}
+                  putItm={hasAtm && strike > atm}
                   callLtp={callTick?.ltp ?? chain.callLtp?.[index]}
                   putLtp={putTick?.ltp ?? chain.putLtp?.[index]}
                   callOi={Number(callTick?.oi ?? chain.callOI?.[index] ?? 0)}
@@ -2045,6 +2318,17 @@ function formatMoney(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+function formatSpot(value) {
+  const number = Number(value || 0);
+  return number > 0 ? formatMoney(number) : '-';
+}
+
+function nearestStrike(strikes = [], price) {
+  const number = Number(price || 0);
+  if (!number || !strikes.length) return null;
+  return strikes.reduce((best, s) => (Math.abs(s - number) < Math.abs(best - number) ? s : best), strikes[0]);
 }
 
 function formatPrice(value) {

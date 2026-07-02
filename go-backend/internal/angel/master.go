@@ -76,6 +76,130 @@ func (m *MasterStore) Index(ctx context.Context) (map[string][]string, error) {
 // Warm proactively loads the master (called on boot so the first chain is fast).
 func (m *MasterStore) Warm(ctx context.Context) error { return m.ensure(ctx) }
 
+// SearchResult is one FUT/OPT contract matched by the basket search box.
+type SearchResult struct {
+	Token         string `json:"token"`
+	TradingSymbol string `json:"tradingSymbol"`
+	Name          string `json:"name"`
+	Expiry        string `json:"expiry"` // master form, e.g. "07JUL2026"
+	Strike        int    `json:"strike"` // 0 for futures
+	OptionType    string `json:"optionType"` // CE | PE | FUT
+	Exchange      string `json:"exchange"`   // NFO | BFO | MCX
+	LotSize       int    `json:"lotSize"`
+	Instrument    string `json:"instrument"` // OPT | FUT
+}
+
+// SearchScrips finds FUT/OPT contracts matching a free-text query (only futures
+// and options — never cash). Every whitespace-separated token must appear in the
+// contract's trading symbol or underlying name, so "nifty 24050 ce" narrows to
+// that strike. Results are ordered: best name match first, then FUT before OPT,
+// then NEAREST EXPIRY first, then strike, then CE before PE.
+func (m *MasterStore) SearchScrips(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	q := strings.ToUpper(strings.TrimSpace(query))
+	if q == "" {
+		return []SearchResult{}, nil
+	}
+	if limit <= 0 {
+		limit = 80
+	}
+	tokens := strings.Fields(q)
+	primary := tokens[0]
+
+	rows, err := m.Data(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	type scored struct {
+		r         SearchResult
+		nameScore int   // 0 exact underlying, 1 prefix, 2 contains
+		instOrder int   // FUT 0, OPT 1
+		expiryMs  int64 // nearest first
+	}
+	var out []scored
+	for i := range rows {
+		row := &rows[i]
+		sym := strings.ToUpper(row.Symbol)
+
+		var optType, instrument string
+		switch {
+		case strings.HasSuffix(sym, "CE"):
+			optType, instrument = "CE", "OPT"
+		case strings.HasSuffix(sym, "PE"):
+			optType, instrument = "PE", "OPT"
+		case strings.HasSuffix(sym, "FUT"):
+			optType, instrument = "FUT", "FUT"
+		default:
+			continue // skip cash / anything that isn't a future or option
+		}
+
+		name := strings.ToUpper(row.Name)
+		matched := true
+		for _, t := range tokens {
+			if !strings.Contains(sym, t) && !strings.Contains(name, t) {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		nameScore := 2
+		if name == primary {
+			nameScore = 0
+		} else if strings.HasPrefix(name, primary) {
+			nameScore = 1
+		}
+		instOrder := 1
+		strike := 0
+		if instrument == "FUT" {
+			instOrder = 0
+		} else {
+			strike = normalizeStrike(row.Strike, row.Segment)
+		}
+		out = append(out, scored{
+			r: SearchResult{
+				Token:         row.Token,
+				TradingSymbol: row.Symbol,
+				Name:          row.Name,
+				Expiry:        row.Expiry,
+				Strike:        strike,
+				OptionType:    optType,
+				Exchange:      row.Segment,
+				LotSize:       row.LotSize,
+				Instrument:    instrument,
+			},
+			nameScore: nameScore,
+			instOrder: instOrder,
+			expiryMs:  parseExpiryMs(row.Expiry),
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.nameScore != b.nameScore {
+			return a.nameScore < b.nameScore
+		}
+		if a.instOrder != b.instOrder {
+			return a.instOrder < b.instOrder
+		}
+		if a.expiryMs != b.expiryMs {
+			return a.expiryMs < b.expiryMs // nearest expiry first
+		}
+		if a.r.Strike != b.r.Strike {
+			return a.r.Strike < b.r.Strike
+		}
+		return a.r.OptionType < b.r.OptionType // CE before PE
+	})
+
+	res := make([]SearchResult, 0, min(limit, len(out)))
+	for i := 0; i < len(out) && i < limit; i++ {
+		res = append(res, out[i].r)
+	}
+	return res, nil
+}
+
 func (m *MasterStore) fresh() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

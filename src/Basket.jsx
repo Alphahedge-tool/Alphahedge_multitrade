@@ -25,15 +25,63 @@ export default function Basket({
   onRemoveLeg,
   onUpdateLeg,
   onResolveLeg,
+  onStepStrike,
   onRefreshMargin,
+  onPlaceBasket,
   onClear,
   onClose,
+  onAddLeg,
+  className = '',
 }) {
-  const [query, setQuery] = useState('');
   const [multiplier, setMultiplier] = useState('1');
   const [basketName, setBasketName] = useState(name);
   const [editingName, setEditingName] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [placing, setPlacing] = useState(false);
+  const [placeResult, setPlaceResult] = useState(null);
+  const [placeError, setPlaceError] = useState('');
   const allChecked = legs.length > 0 && legs.every((leg) => leg.selected !== false);
+  const selectedLegs = legs.filter((leg) => leg.selected !== false);
+
+  async function confirmOrders() {
+    setPlacing(true);
+    setPlaceError('');
+    setPlaceResult(null);
+    try {
+      const result = await onPlaceBasket?.();
+      setPlaceResult(result || null);
+    } catch (error) {
+      setPlaceError(error.message || 'Order placement failed');
+    } finally {
+      setPlacing(false);
+    }
+  }
+
+  // Turn a search result into a fully-resolved basket leg (token already known,
+  // so no /resolve-leg round-trip needed). Live LTP arrives once the feed picks
+  // up the token via the basket-tokens sync.
+  function addFromSearch(r) {
+    onAddLeg?.({
+      symbol: r.name,
+      tradingSymbol: r.tradingSymbol,
+      expiry: r.expiry,
+      exchange: r.exchange,
+      lotSize: Number(r.lotSize) || 1,
+      strike: r.instrument === 'FUT' ? 0 : Number(r.strike) || 0,
+      optionType: r.optionType, // CE | PE | FUT
+      instrument: r.instrument, // OPT | FUT
+      action: 'BUY',
+      product: 'CF',
+      qty: 1,
+      price: '',
+      priceType: 'MARKET',
+      ltp: null,
+      close: null,
+      changePct: null,
+      token: r.token,
+      selected: true,
+    });
+  }
 
   function toggleAll(checked) {
     legs.forEach((leg) => onUpdateLeg?.(leg.id, { selected: checked }));
@@ -59,7 +107,7 @@ export default function Basket({
   }
 
   return (
-    <section className="basket-panel" aria-label="Order basket">
+    <section className={`basket-panel ${className}`.trim()} aria-label="Order basket">
       {/* ── Title bar: name · order count · search · window actions ── */}
       <header className="basket-titlebar">
         <div className="basket-title">
@@ -89,16 +137,7 @@ export default function Basket({
           </button>
           <span className="basket-count">({legs.length} / {maxOrders} Orders)</span>
         </div>
-        <div className="basket-search">
-          <Search className="basket-search-icon" size={15} aria-hidden="true" />
-          <input
-            className="basket-search-input"
-            type="text"
-            placeholder="Search and add stocks, options & futures"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        <BasketSearch onAdd={addFromSearch} />
         <div className="basket-window-actions">
           <button className="basket-window-btn" type="button" title="Minimise"><Minus size={15} /></button>
           <button className="basket-window-btn" type="button" title="Close basket" onClick={onClose}><X size={15} /></button>
@@ -131,13 +170,9 @@ export default function Basket({
             onRemoveLeg={onRemoveLeg}
             onUpdateLeg={onUpdateLeg}
             onResolveLeg={onResolveLeg}
+            onStepStrike={onStepStrike}
           />
         ))}
-        {!legs.length && (
-          <div className="basket-empty">
-            Click <strong>B</strong> or <strong>S</strong> on the option chain to add legs to this basket.
-          </div>
-        )}
       </div>
 
       {/* ── Margin / multiplier strip ── Required margin is the real figure
@@ -197,7 +232,7 @@ export default function Basket({
               Clear
             </button>
           )}
-          <button className="basket-btn analyse" type="button">
+          <button className="basket-btn analyse" type="button" onClick={onRefreshMargin}>
             <BarChart3 size={15} aria-hidden="true" />
             ANALYSE
           </button>
@@ -205,12 +240,32 @@ export default function Basket({
             <Bookmark size={15} aria-hidden="true" />
             SAVE BASKET
           </button>
-          <button className="basket-btn preview" type="button">
+          <button
+            className="basket-btn preview"
+            type="button"
+            disabled={!selectedLegs.length}
+            onClick={() => { setPlaceResult(null); setPlaceError(''); setPreviewOpen(true); }}
+          >
             <Eye size={15} aria-hidden="true" />
             PREVIEW BASKET
           </button>
         </div>
       </footer>
+      {previewOpen && (
+        <OrderPreviewModal
+          name={basketName || name}
+          legs={selectedLegs}
+          margin={margin}
+          charges={charges}
+          placing={placing}
+          result={placeResult}
+          error={placeError}
+          onAnalyse={onRefreshMargin}
+          onEdit={() => setPreviewOpen(false)}
+          onClose={() => setPreviewOpen(false)}
+          onConfirm={confirmOrders}
+        />
+      )}
     </section>
   );
 }
@@ -218,9 +273,11 @@ export default function Basket({
 // A single leg row. Mirrors the screenshot columns: select, stock+LTP, action
 // (B/S pill), expiry, strike, CE/PE, product, quantity stepper, price + a
 // LIMIT/MARKET toggle.
-function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg }) {
+function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onResolveLeg, onStepStrike }) {
   const isSell = leg.action === 'SELL';
-  const isMarket = leg.priceType !== 'LIMIT';
+  const orderType = String(leg.priceType || 'MARKET').toUpperCase();
+  const isMarket = orderType === 'MARKET' || orderType === 'SL-M';
+  const needsTrigger = orderType === 'SL' || orderType === 'SL-M';
   // Strike is edited in LOCAL state so typing doesn't mutate leg.strike on every
   // keystroke — that used to defeat the "did the strike change?" guard on blur
   // (leg.strike already equalled the typed value, so the re-resolve never
@@ -299,12 +356,16 @@ function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onR
       </span>
 
       <span className="bc-strike">
+        {leg.optionType === 'FUT' ? (
+          <span className="basket-fut-dash">—</span>
+        ) : (
         <span className="basket-stepper">
           {/* Type freely (local update); commit + re-resolve the contract on
-              Enter/blur, only if the value actually changed. Arrows step by 50
-              and re-resolve immediately; onMouseDown preventDefault stops the
-              click from blurring the input (which would fire a second resolve
-              back to the old strike and race the first). */}
+              Enter/blur, only if the value actually changed. Arrows step to the
+              ADJACENT real strike in this symbol's ladder (via onStepStrike) —
+              not a fixed 50 — and re-resolve immediately; onMouseDown
+              preventDefault stops the click from blurring the input (which would
+              fire a second resolve back to the old strike and race the first). */}
           <input
             type="number"
             value={strikeInput}
@@ -320,26 +381,31 @@ function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onR
             <button
               type="button" tabIndex={-1} title="Increase strike"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onResolveLeg?.(leg.id, { strike: (Number(leg.strike) || 0) + 50 })}
+              onClick={() => onStepStrike?.(leg.id, +1)}
             >▲</button>
             <button
               type="button" tabIndex={-1} title="Decrease strike"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onResolveLeg?.(leg.id, { strike: Math.max(0, (Number(leg.strike) || 0) - 50) })}
+              onClick={() => onStepStrike?.(leg.id, -1)}
             >▼</button>
           </span>
         </span>
+        )}
       </span>
 
       <span className="bc-cepe">
-        <button
-          type="button"
-          className={`basket-cepe-pill ${leg.optionType === 'PE' ? 'pe' : 'ce'}`}
-          title="Toggle CE/PE"
-          onClick={() => onResolveLeg?.(leg.id, { optionType: leg.optionType === 'PE' ? 'CE' : 'PE' })}
-        >
-          {leg.optionType || 'CE'}
-        </button>
+        {leg.optionType === 'FUT' ? (
+          <span className="basket-cepe-pill fut">FUT</span>
+        ) : (
+          <button
+            type="button"
+            className={`basket-cepe-pill ${leg.optionType === 'PE' ? 'pe' : 'ce'}`}
+            title="Toggle CE/PE"
+            onClick={() => onResolveLeg?.(leg.id, { optionType: leg.optionType === 'PE' ? 'CE' : 'PE' })}
+          >
+            {leg.optionType || 'CE'}
+          </button>
+        )}
       </span>
 
       <span className="bc-product">
@@ -379,22 +445,103 @@ function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onR
           title={isMarket ? 'Market order — executes at live price' : 'Limit price'}
           onChange={(event) => onUpdateLeg?.(leg.id, { price: event.target.value })}
         />
-        <span className="basket-pricetype">
-          <span className={!isMarket ? 'on' : ''}>LIMIT</span>
-          <button
-            type="button"
-            className={`basket-toggle ${isMarket ? 'market' : 'limit'}`}
-            role="switch"
-            aria-checked={isMarket}
-            title="Toggle price type"
-            onClick={() => onUpdateLeg?.(leg.id, { priceType: isMarket ? 'LIMIT' : 'MARKET' })}
-          >
-            <span className="basket-toggle-knob" />
-          </button>
-          <span className={isMarket ? 'on' : ''}>MARKET</span>
-        </span>
+        {needsTrigger && (
+          <input
+            className="basket-trigger-input"
+            type="number"
+            step="0.05"
+            value={leg.triggerPrice ?? ''}
+            placeholder="Trigger"
+            title="Trigger price"
+            onChange={(event) => onUpdateLeg?.(leg.id, { triggerPrice: event.target.value })}
+          />
+        )}
+        <select
+          className="basket-ordertype"
+          value={orderType}
+          title="Order type"
+          onChange={(event) => onUpdateLeg?.(leg.id, { priceType: event.target.value })}
+        >
+          <option value="MARKET">MARKET</option>
+          <option value="LIMIT">LIMIT</option>
+          <option value="SL">SL</option>
+          <option value="SL-M">SL-M</option>
+        </select>
       </span>
     </div>
+  );
+}
+
+function OrderPreviewModal({ name, legs, margin, charges, placing, result, error, onAnalyse, onEdit, onClose, onConfirm }) {
+  const placed = Number(result?.placed || 0);
+  const failed = Number(result?.failed || 0);
+  return createPortal(
+    <div className="order-preview-backdrop" role="presentation">
+      <section className="order-preview" role="dialog" aria-modal="true" aria-label="Preview basket order">
+        <header className="order-preview-titlebar">
+          <div className="order-preview-title">
+            <strong>{String(name || 'BASKET').toUpperCase()}</strong>
+            <span>({legs.length} / 50 Orders)</span>
+          </div>
+          <div className="order-preview-window-actions">
+            <button type="button" title="Minimise" onClick={onClose}><Minus size={14} /></button>
+            <button type="button" title="Close" onClick={onClose}><X size={16} /></button>
+          </div>
+        </header>
+
+        <div className="order-preview-head">
+          <span>Name</span>
+          <span>Action/Product</span>
+          <span>Quantity</span>
+          <span>Order Type</span>
+          <span>Price</span>
+        </div>
+
+        <div className="order-preview-rows">
+          {legs.map((leg) => (
+            <div className="order-preview-row" key={leg.id}>
+              <span className="op-name">
+                <strong>{leg.symbol}</strong>
+                <small>{previewSubtitle(leg)}</small>
+              </span>
+              <span className="op-action">
+                <b className={leg.action === 'SELL' ? 'sell' : 'buy'}>{leg.action}</b>
+                <em>{leg.product || 'CF'}</em>
+              </span>
+              <span>{Number(leg.qty || 1)} Lots</span>
+              <span>{formatOrderType(leg.priceType)}</span>
+              <span>{previewPrice(leg)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="order-preview-margin">
+          <span>Available Margin <strong>-</strong></span>
+          <span>Required Margin <strong>{renderMargin(margin)}</strong></span>
+        </div>
+
+        {(error || result) && (
+          <div className={`order-preview-result${failed ? ' has-fail' : ''}`}>
+            {error || `${placed} placed${failed ? `, ${failed} failed` : ''}`}
+          </div>
+        )}
+
+        <footer className="order-preview-footer">
+          <span>Total Charges <strong>{renderMargin(charges)}</strong></span>
+          <div className="order-preview-actions">
+            <button className="basket-btn analyse" type="button" onClick={onAnalyse} disabled={placing}>
+              <BarChart3 size={15} aria-hidden="true" />
+              ANALYSE
+            </button>
+            <button className="basket-btn save" type="button" onClick={onEdit} disabled={placing}>EDIT</button>
+            <button className="basket-btn preview" type="button" onClick={onConfirm} disabled={placing || !legs.length || placed > 0}>
+              {placing ? 'PLACING...' : 'CONFIRM ORDER'}
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -402,6 +549,116 @@ function BasketRow({ leg, liveTick, expiries = [], onRemoveLeg, onUpdateLeg, onR
 // (from the shared master index) and re-resolves the leg's contract on change.
 // The menu is portalled to <body> with fixed positioning so it can't be clipped
 // by the basket panel's / rows' overflow:hidden.
+// Live FUT/OPT search for the basket. Queries our scrip master (/search-scrips)
+// — futures first, then nearest-expiry options — and adds the picked contract as
+// a leg. Cash/equity is never returned. The dropdown is portalled to <body> so
+// the basket panel's overflow:hidden doesn't clip it.
+function BasketSearch({ onAdd }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState('all'); // all | fut | opt
+  const [rect, setRect] = useState(null);
+  const boxRef = useRef(null);
+  const menuRef = useRef(null);
+
+  const reposition = () => { if (boxRef.current) setRect(boxRef.current.getBoundingClientRect()); };
+
+  // Debounced search as the user types.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setResults([]); setOpen(false); return undefined; }
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/angel/search-scrips?q=${encodeURIComponent(q)}&limit=100`);
+        const body = await res.json().catch(() => ({}));
+        setResults(Array.isArray(body.results) ? body.results : []);
+        setOpen(true);
+        reposition();
+      } catch { setResults([]); }
+      finally { setLoading(false); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Anchor the portalled menu; close on outside click / Escape.
+  useLayoutEffect(() => { if (open) reposition(); }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (boxRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+    };
+  }, [open]);
+
+  const filtered = results.filter((r) => (
+    tab === 'all' ? true : tab === 'fut' ? r.instrument === 'FUT' : r.instrument === 'OPT'
+  ));
+
+  return (
+    <div className="basket-search" ref={boxRef}>
+      <Search className="basket-search-icon" size={15} aria-hidden="true" />
+      <input
+        className="basket-search-input"
+        type="text"
+        placeholder="Search and add stocks, options & futures"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onFocus={() => { if (results.length) { setOpen(true); reposition(); } }}
+      />
+      {query && (
+        <button className="basket-search-clear" type="button" title="Clear"
+          onClick={() => { setQuery(''); setResults([]); setOpen(false); }}><X size={13} /></button>
+      )}
+      {open && rect && createPortal(
+        <div
+          ref={menuRef}
+          className="basket-search-dd"
+          style={{ position: 'fixed', top: rect.bottom + 4, left: rect.left, width: rect.width }}
+        >
+          <div className="basket-search-tabs">
+            {[['all', 'All'], ['fut', 'Futures'], ['opt', 'Options']].map(([k, l]) => (
+              <button key={k} type="button" className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{l}</button>
+            ))}
+          </div>
+          <ul className="basket-search-list">
+            {loading && <li className="basket-search-empty">Searching…</li>}
+            {!loading && !filtered.length && <li className="basket-search-empty">No FUT/OPT contracts for “{query}”</li>}
+            {filtered.map((r) => (
+              <li key={r.token} className="basket-search-item" onClick={() => onAdd?.(r)}>
+                <span className={`bs-badge ${r.instrument.toLowerCase()}`}>{r.instrument}</span>
+                <span className="bs-main">
+                  <span className="bs-sym">{r.name}<em>{r.exchange}</em></span>
+                  <span className="bs-sub">
+                    {formatExpiry(r.expiry)}
+                    {r.instrument === 'OPT' && <> · {r.strike} <b className={r.optionType === 'PE' ? 'pe' : 'ce'}>{r.optionType}</b></>}
+                  </span>
+                </span>
+                <button className="bs-add" type="button" title="Add to basket"
+                  onClick={(e) => { e.stopPropagation(); onAdd?.(r); }}>+</button>
+              </li>
+            ))}
+          </ul>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 function ExpiryDropdown({ value, expiries = [], loading, error, onChange }) {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState(null);
@@ -552,6 +809,27 @@ function formatChange(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '0.00';
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
+}
+
+function formatOrderType(value) {
+  const type = String(value || 'MARKET').toUpperCase();
+  if (type === 'SL') return 'SL';
+  if (type === 'SL-M') return 'SL-M';
+  if (type === 'LIMIT') return 'LIMIT';
+  return 'MARKET';
+}
+
+function previewPrice(leg) {
+  const type = formatOrderType(leg.priceType);
+  if (type === 'MARKET') return '-';
+  if (type === 'SL-M') return `Trig ${formatLtp(leg.triggerPrice)}`;
+  if (type === 'SL') return `${formatLtp(leg.price)} / Trig ${formatLtp(leg.triggerPrice)}`;
+  return formatLtp(leg.price);
+}
+
+function previewSubtitle(leg) {
+  if (leg.optionType === 'FUT') return formatExpiry(leg.expiry);
+  return `${formatExpiry(leg.expiry)} ${leg.strike} ${leg.optionType || ''}`.trim();
 }
 
 function formatExpiry(value) {

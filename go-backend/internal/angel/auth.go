@@ -97,6 +97,7 @@ func (c *Client) trySessionRMS(ctx context.Context, cc ClientCreds, headers map[
 	}
 	s.LastUsedAt = time.Now().UTC().Format(time.RFC3339)
 	s.LastRMS, _ = rms["data"].(map[string]any)
+	c.valid.mark(s.JWTToken) // getRMS just confirmed this token is live
 	return buildRMSResponse(cc.ClientCode, mapData(rms), "session", s), nil
 }
 
@@ -143,6 +144,7 @@ func (c *Client) rmsResultFromLogin(ctx context.Context, cc ClientCreds, headers
 		LastUsedAt:   now,
 	}
 	s.LastRMS, _ = rms["data"].(map[string]any)
+	c.valid.mark(s.JWTToken) // fresh login + getRMS: this token is live
 	return buildRMSResponse(cc.ClientCode, mapData(rms), source, s), nil
 }
 

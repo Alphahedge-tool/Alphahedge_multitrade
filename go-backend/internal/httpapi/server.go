@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,14 +20,15 @@ import (
 
 // Server holds the shared dependencies and implements http.Handler.
 type Server struct {
-	cfg    config.Config
-	client *angel.Client
-	master *angel.MasterStore
-	feed   *angel.Feed
+	cfg       config.Config
+	client    *angel.Client
+	master    *angel.MasterStore
+	feed      *angel.Feed
+	orderFeed *angel.OrderFeed
 }
 
-func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed) *Server {
-	return &Server{cfg: cfg, client: client, master: master, feed: feed}
+func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed, orderFeed *angel.OrderFeed) *Server {
+	return &Server{cfg: cfg, client: client, master: master, feed: feed, orderFeed: orderFeed}
 }
 
 // Handler builds the router.
@@ -35,6 +37,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/angel/auto-login", s.postJSON(s.handleAutoLogin))
 	mux.HandleFunc("/api/angel/logout", s.handleLogout)
 	mux.HandleFunc("/api/angel/master-index", s.handleMasterIndex)
+	// Basket search: free-text FUT/OPT lookup from OUR master (no Angel round-trip).
+	mux.HandleFunc("/api/angel/search-scrips", s.handleSearchScrips)
 	// All option scrips for a symbol+expiry straight from OUR master (no Angel
 	// round-trip), mirroring Angel's all-scrip-options. GET with query params.
 	mux.HandleFunc("/api/angel/all-scrip-options", s.handleAllScripOptions)
@@ -45,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/angel/option-chain", s.postJSON(s.handleOptionChain))
 	mux.HandleFunc("/api/angel/order-book", s.postJSON(s.handleOrderBook))
 	mux.HandleFunc("/api/angel/trade-book", s.postJSON(s.handleTradeBook))
+	mux.HandleFunc("/api/angel/place-basket", s.postJSON(s.handlePlaceBasket))
 	mux.HandleFunc("/api/angel/margin", s.postJSON(s.handleMargin))
 	mux.HandleFunc("/api/angel/charges", s.postJSON(s.handleCharges))
 	mux.HandleFunc("/api/angel/resolve-leg", s.postJSON(s.handleResolveLeg))
@@ -55,6 +60,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/angel/basket-tokens", s.postJSON(s.handleBasketTokens))
 	mux.HandleFunc("/api/angel/subscribe-more", s.postJSON(s.handleBasketTokens))
 	mux.HandleFunc("/api/angel/stream", s.handleStream)
+	// Real-time order updates (Angel's order-status WebSocket → SSE). The client
+	// posts its session to start watching, then listens on /order-stream.
+	mux.HandleFunc("/api/angel/order-subscribe", s.postJSON(s.handleOrderSubscribe))
+	mux.HandleFunc("/api/angel/order-stream", s.handleOrderStream)
 	mux.HandleFunc("/", s.serveStatic) // SPA static fallback
 	return withCORS(mux)
 }
@@ -129,6 +138,23 @@ func (s *Server) handleRefreshMaster(ctx context.Context, _ map[string]json.RawM
 	return s.master.Refresh(ctx)
 }
 
+// handleSearchScrips serves the basket's FUT/OPT search: GET ?q=nifty&limit=80.
+func (s *Server) handleSearchScrips(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	limit := 80
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	res, err := s.master.SearchScrips(r.Context(), q, limit)
+	if err != nil {
+		writeJSON(w, 500, errBody(err))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": true, "results": res})
+}
+
 func (s *Server) handleOptionChain(ctx context.Context, body map[string]json.RawMessage) (any, error) {
 	var req angel.OptionChainReq
 	decodeReq(body, &req)
@@ -145,6 +171,12 @@ func (s *Server) handleTradeBook(ctx context.Context, body map[string]json.RawMe
 	var req angel.BookReq
 	decodeReq(body, &req)
 	return s.client.GetTradeBook(ctx, req)
+}
+
+func (s *Server) handlePlaceBasket(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req angel.PlaceBasketReq
+	decodeReq(body, &req)
+	return s.client.PlaceBasket(ctx, req)
 }
 
 // handleChainPrices returns just the live prices for a symbol+expiry (the slow,
@@ -234,9 +266,33 @@ func (s *Server) handleBasketTokens(ctx context.Context, body map[string]json.Ra
 	}, nil
 }
 
-// handleStream is the SSE endpoint: registers a client and streams tick/status
-// events until the request is cancelled.
+// handleStream is the market-data SSE endpoint: tick/status events.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	serveSSE(w, r, s.feed.AddClient, s.feed.RemoveClient)
+}
+
+// handleOrderSubscribe opens (idempotently) an order-status WebSocket for the
+// posted account so its order updates start flowing to /order-stream.
+func (s *Server) handleOrderSubscribe(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req struct {
+		Credentials angel.FeedCredentials `json:"credentials"`
+	}
+	decodeReq(body, &req)
+	if err := s.orderFeed.Watch(req.Credentials); err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": true, "watching": req.Credentials.ClientCode}, nil
+}
+
+// handleOrderStream is the order-update SSE endpoint: pushes each order event
+// (and connection status) as the account's orders change.
+func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
+	serveSSE(w, r, s.orderFeed.AddClient, s.orderFeed.RemoveClient)
+}
+
+// serveSSE runs the shared Server-Sent-Events loop against any feed exposing
+// AddClient/RemoveClient (market ticks or order updates).
+func serveSSE(w http.ResponseWriter, r *http.Request, add func() (chan angel.SSEEvent, bool), remove func(chan angel.SSEEvent)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -249,8 +305,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 
-	ch, connected := s.feed.AddClient()
-	defer s.feed.RemoveClient(ch)
+	ch, connected := add()
+	defer remove(ch)
 
 	fmt.Fprint(w, "retry: 3000\n\n")
 	writeSSE(w, "status", fmt.Sprintf(`{"connected":%t,"message":"Stream open"}`, connected))

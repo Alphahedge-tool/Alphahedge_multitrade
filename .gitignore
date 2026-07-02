@@ -3,3 +3,4 @@ node_modules/
 scrip_master.json
 scrip_index.json
 dist/
+*.exe~

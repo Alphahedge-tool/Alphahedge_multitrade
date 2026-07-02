@@ -65,6 +65,7 @@ type Client struct {
 	cfg      config.Config
 	limiters *limiterSet
 	cache    *quoteCache
+	valid    *validationCache
 }
 
 // NewClient builds the shared client with a tuned, pooling Transport.
@@ -92,6 +93,7 @@ func NewClient(cfg config.Config) *Client {
 		cfg:      cfg,
 		limiters: newLimiterSet(),
 		cache:    newQuoteCache(),
+		valid:    newValidationCache(),
 	}
 }
 

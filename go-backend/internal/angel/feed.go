@@ -155,22 +155,29 @@ func (f *Feed) Subscribe(creds FeedCredentials, exchange string, tokens []string
 	}
 
 	f.mu.Lock()
-	// Drop previous chain tokens not in the new chain (basket legs aren't in
-	// chainKeys, so they're never removed).
+	// Drop previous chain tokens the new chain no longer needs — but KEEP any the
+	// basket still holds (a leg may share a strike with the old chain). The dropped
+	// ones are collected so we can UNSUBSCRIBE them on Angel too, not just forget
+	// them locally: otherwise the old expiry keeps streaming and keeps counting
+	// against Angel's 1000-token session cap, so repeated expiry changes would
+	// eventually exhaust it.
+	var removed []feedEntry
 	for key := range f.chainKeys {
-		if newKeys[key] {
+		if newKeys[key] || f.basketKeys[key] {
 			continue
 		}
 		exType, token := splitKey(key)
 		if set := f.tokens[exType]; set != nil {
 			delete(set, token)
 		}
+		removed = append(removed, feedEntry{exType, token})
 	}
 	f.chainKeys = newKeys
 	f.creds = creds
 	added, dropped := f.mergeLocked(entries)
 	f.mu.Unlock()
 
+	f.unsubscribe(groupEntries(removed)) // release the old expiry/strike tokens upstream
 	f.startOrResubscribe(creds, added)
 	if dropped > 0 && f.cfg.FeedDebug {
 		log.Printf("[feed] chain subscribe hit the %d-token cap; %d dropped", maxFeedTokens, dropped)

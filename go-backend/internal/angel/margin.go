@@ -9,15 +9,16 @@ import (
 
 // Leg is a basket leg as sent by the frontend for margin/charges.
 type Leg struct {
-	Token       string  `json:"token"`
-	Symbol      string  `json:"symbol"`
-	Exchange    string  `json:"exchange"`
-	Qty         float64 `json:"qty"`
-	LotSize     float64 `json:"lotSize"`
-	Price       float64 `json:"price"`
-	TradeType   string  `json:"tradeType"`
-	ProductType string  `json:"productType"`
-	OrderType   string  `json:"orderType"` // MARKET | LIMIT — required by the margin batch API
+	Token        string  `json:"token"`
+	Symbol       string  `json:"symbol"`
+	Exchange     string  `json:"exchange"`
+	Qty          float64 `json:"qty"`
+	LotSize      float64 `json:"lotSize"`
+	Price        float64 `json:"price"`
+	TriggerPrice float64 `json:"triggerPrice"`
+	TradeType    string  `json:"tradeType"`
+	ProductType  string  `json:"productType"`
+	OrderType    string  `json:"orderType"` // MARKET | LIMIT — required by the margin batch API
 }
 
 // MarginReq is the request body for /margin.

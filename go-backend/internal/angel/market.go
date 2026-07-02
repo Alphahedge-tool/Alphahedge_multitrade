@@ -67,7 +67,8 @@ type OptionChainReq struct {
 // and, when a session is available, adds one cheap spot LTP quote so the
 // response carries spot + atm immediately — the frontend can render and mark the
 // ATM row without waiting for the first live tick. The spot quote is best-effort:
-// if there's no session, the skeleton still returns (atm from the median strike).
+// if it cannot be fetched, we fall back to the median strike like the original
+// Node backend did.
 func (c *Client) ScripOptionsWithSpot(ctx context.Context, master *MasterStore, req ScripOptionsReq, cc ClientCreds) (map[string]any, error) {
 	res, err := master.AllScripOptions(ctx, req)
 	if err != nil {
@@ -78,7 +79,7 @@ func (c *Client) ScripOptionsWithSpot(ctx context.Context, master *MasterStore, 
 
 	spot := 0.0
 	if len(strikes) > 0 {
-		spot = float64(strikes[len(strikes)/2]) // median fallback
+		spot = float64(strikes[len(strikes)/2])
 	}
 
 	// Ensure a session so the response can carry the feed block (the frontend
@@ -355,10 +356,7 @@ func (c *Client) GetOptionChain(ctx context.Context, req OptionChainReq, master 
 			atm = s
 		}
 	}
-	atmIndex := indexOf(strikes, atm)
-	if atmIndex < 0 {
-		atmIndex = 0
-	}
+	atmIndex := maxInt(0, indexOf(strikes, atm))
 	side := clampInt(req.Window, 1, 30)
 	if req.Window == 0 {
 		side = 12
@@ -394,11 +392,11 @@ func (c *Client) GetOptionChain(ctx context.Context, req OptionChainReq, master 
 	chunks := chunkTokens(liveTokens, quoteChunk)
 
 	var (
-		fetched []map[string]any
+		fetched  []map[string]any
 		greekRes map[string]any
-		liveErr error
-		mu      sync.Mutex
-		wg      sync.WaitGroup
+		liveErr  error
+		mu       sync.Mutex
+		wg       sync.WaitGroup
 	)
 	for _, chunk := range chunks {
 		wg.Add(1)
@@ -672,16 +670,36 @@ func (c *Client) ResolveLeg(ctx context.Context, req ResolveLegReq, master *Mast
 	}, nil
 }
 
-// sessionOrLogin returns a usable session, logging in if needed.
+// sessionOrLogin returns a VALID session for the client, logging in if needed.
+//
+// A stored session is trusted only after AutoLogin validates its JWT (a getRMS
+// probe) and, if that token is dead, transparently performs a fresh TOTP login —
+// so a stale jwt/feedToken (e.g. left over from a much earlier login) can never
+// silently break the spot quote, chain prices, and the WS feed all at once with
+// no re-login. We deliberately do NOT short-circuit on a non-empty jwtToken here:
+// that was the bug — an expired token looks present but fails every downstream
+// call. Only if AutoLogin can't run at all (missing creds) do we fall back to
+// trusting whatever session the caller handed us.
 func (c *Client) sessionOrLogin(ctx context.Context, cc ClientCreds) (*Session, error) {
-	if s := resolveSession(cc); s != nil {
+	// Fast path: a stored session whose JWT passed a liveness probe within the TTL
+	// is trusted without re-validating — this is what keeps 3 s order-book polling
+	// (and chain reloads) from doing a getRMS on every call. A token that dies
+	// inside the window is still caught: the order/trade-book calls re-login and
+	// retry on failure.
+	if s := resolveSession(cc); s != nil && c.valid.fresh(s.JWTToken) {
 		return s, nil
 	}
 	res, err := c.AutoLogin(ctx, cc)
 	if err != nil {
+		if s := resolveSession(cc); s != nil {
+			return s, nil
+		}
 		return nil, err
 	}
 	if s := sessionFromResponse(res); s != nil {
+		return s, nil
+	}
+	if s := resolveSession(cc); s != nil {
 		return s, nil
 	}
 	return nil, fmt.Errorf("Angel session unavailable")

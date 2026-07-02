@@ -33,6 +33,54 @@ func newQuoteCache() *quoteCache {
 	return &quoteCache{entries: map[string]cacheEntry{}}
 }
 
+// sessionValidTTL is how long a JWT that passed a getRMS liveness probe is
+// trusted before we re-validate. This is what keeps a 3 s order-book poll from
+// doing a getRMS on every single request, while still re-checking the token
+// roughly once a minute (and the order/trade-book calls self-heal a token that
+// dies inside the window by re-logging-in and retrying).
+const sessionValidTTL = 60 * time.Second
+
+// validationCache remembers which JWTs recently passed a liveness probe, so
+// repeated authenticated calls (order-book polling, chain reloads, margin) don't
+// re-validate the session on every request.
+type validationCache struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func newValidationCache() *validationCache {
+	return &validationCache{seen: map[string]time.Time{}}
+}
+
+// fresh reports whether jwt was validated within the TTL.
+func (v *validationCache) fresh(jwt string) bool {
+	if jwt == "" {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	t, ok := v.seen[jwt]
+	return ok && time.Since(t) < sessionValidTTL
+}
+
+// mark records that jwt just passed validation (or was freshly minted by login).
+func (v *validationCache) mark(jwt string) {
+	if jwt == "" {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.seen[jwt] = time.Now()
+	if len(v.seen) > 256 { // opportunistic cleanup so the map can't grow unbounded
+		cutoff := time.Now().Add(-sessionValidTTL)
+		for k, t := range v.seen {
+			if t.Before(cutoff) {
+				delete(v.seen, k)
+			}
+		}
+	}
+}
+
 // do returns a cached value if fresh, otherwise runs fn exactly once across all
 // concurrent callers with the same key and caches the result for the TTL.
 func (q *quoteCache) do(ctx context.Context, key string, fn func() (any, error)) (any, error) {
