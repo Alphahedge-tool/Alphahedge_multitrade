@@ -1,0 +1,80 @@
+/* Admin UI design system — ported from Admin_project's index.css.
+   Defines the --ao-* CSS variables the MUI theme + sidebar reference, plus the
+   app-shell / app-body / app-main layout. Loaded only by the admin entry point
+   (AdminApp), so it doesn't collide with the existing Tailwind app. */
+
+:root {
+  --ao-blue: #3F5BD9;
+  --ao-blue-hover: #354CB5;
+  --ao-blue-surface: #E8ECFC;
+  --ao-blue-bg: #F1F4FD;
+  --ao-green: #008F75;
+  --ao-green-bg: #F0FAF5;
+  --ao-red: #D64D4D;
+  --ao-red-bg: #FFF2F2;
+  --ao-purple: #581DBE;
+  --ao-gold: #FF9933;
+  --ao-bold: #253040;
+  --ao-base: #425061;
+  --ao-caption: #717A89;
+  --ao-placeholder: #959FB0;
+  --ao-bg: #F5F7FA;
+  --ao-surface: #FFFFFF;
+  --ao-surface-2: #F1F4FD;
+  --ao-hover: #F5F7FA;
+  --ao-border: #DDDFE4;
+  --ao-border-soft: #EAEBF1;
+  --shadow-card: 0 1px 2px rgba(43, 47, 63, .06), 0 4px 16px rgba(43, 47, 63, .06);
+  --shadow-pop: 0 4px 24px rgba(0, 0, 0, .12);
+  --radius: 10px;
+}
+
+/* Custom scrollbars for the admin surface. */
+.app-shell *::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.app-shell *::-webkit-scrollbar-thumb {
+  background: #cdd2dc;
+  border: 2px solid transparent;
+  border-radius: 9px;
+  background-clip: padding-box;
+}
+.app-shell *::-webkit-scrollbar-thumb:hover {
+  background: #b6bdca;
+  background-clip: padding-box;
+}
+.app-shell *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-shell {
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ao-bg);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 18px;
+  background: var(--ao-bg);
+}
+
+.page-shell {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}

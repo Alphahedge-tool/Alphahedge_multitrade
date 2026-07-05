@@ -8,3 +8,8 @@ dist/
 .env.local
 *.local.ps1
 go-backend/scripts/upstox_fail_*
+auth_data.db
+logs/
+__pycache__/
+*.pyc
+node-backend/master/cache/

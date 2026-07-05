@@ -1,6 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Search, X } from 'lucide-react';
+import {
+  BarChart3,
+  BriefcaseBusiness,
+  Database,
+  Layers,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Rss,
+  Search,
+  Settings2,
+  Trash2,
+  UserRound,
+  UsersRound,
+  X,
+} from 'lucide-react';
 import Basket from './Basket.jsx';
 import './styles.css';
 
@@ -69,7 +84,7 @@ const defaultClients = [
   },
 ];
 
-function App() {
+export default function App() {
   const [activeTab, setActiveTab] = useState('settings');
   // Tabs opened at least once. The Strategies tab hosts the option chain and its
   // live WebSocket feed; once it's mounted we keep it mounted (just hidden) so
@@ -196,7 +211,7 @@ function App() {
     for (const index of targetIndexes) {
       const client = loginClients[index];
       if (!client?.enabled) continue;
-      const hasLiveToken = client.session?.jwtToken || client.session?.accessToken || client.session?.tradeToken;
+      const hasLiveToken = client.session?.jwtToken || client.session?.accessToken || client.session?.tradeToken || client.session?.sessionToken;
       if (client.loggedIn && (demoMode || hasLiveToken)) continue;
 
       updateClient(index, { status: 'Logging in...', loggedIn: false, netMargin: '0.00' });
@@ -208,12 +223,16 @@ function App() {
           result = await upstoxLogin(client);
         } else if (client.broker === 'KotakNeoV3') {
           result = await kotakLogin(client);
+        } else if (client.broker === 'Nubra') {
+          result = await nubraLogin(client);
         } else {
           result = await liveLogin(client, backendUrl);
         }
         updateClient(index, {
           loggedIn: true,
           status: demoMode ? 'Demo login' : `Logged in - ${result.sessionSource || 'live'}`,
+          ...(result.totpSecret ? { totpSecret: result.totpSecret } : {}),
+          ...(result.clearSetupToken ? { apiSecret: '' } : {}),
           netMargin: formatMoney(result.availableMargin),
           availableCash: formatMoney(result.availableCash),
           collateral: formatMoney(result.collateral),
@@ -223,6 +242,15 @@ function App() {
           nrmlMtm: formatMoney(result.nrmlMtm),
           session: result.session || client.session || null,
         });
+        if (result.totpSecret) {
+          loginClients = loginClients.map((rowClient, row) => (row === index ? { ...rowClient, totpSecret: result.totpSecret, apiSecret: '' } : rowClient));
+          if (supabaseLoaded.current) {
+            saveAccountsToSupabase(loginClients).catch((error) => {
+              setSaveMsg(`TOTP secret save failed: ${error.message}`);
+              setTimeout(() => setSaveMsg(''), 4000);
+            });
+          }
+        }
       } catch (error) {
         updateClient(index, {
           loggedIn: false,
@@ -252,8 +280,8 @@ function App() {
   // saveToSupabase pushes the current table to Supabase so it's the shared
   // source of truth. Only the credential/config fields are stored (not live
   // session/margin state, which is per-run).
-  async function saveToSupabase() {
-    const accounts = clients.map((c) => ({
+  function accountPayloads(rows) {
+    return rows.map((c) => ({
       enabled: !!c.enabled,
       alias: c.alias || '',
       clientCode: c.clientCode || '',
@@ -268,14 +296,23 @@ function App() {
       historicalApi: !!c.historicalApi,
       sqoffTime: c.sqoffTime || '15:16',
     }));
+  }
+
+  async function saveAccountsToSupabase(rows) {
+    const accounts = accountPayloads(rows);
+    const res = await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accounts }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
+    return body;
+  }
+
+  async function saveToSupabase() {
     try {
-      const res = await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accounts }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
+      const body = await saveAccountsToSupabase(clients);
       setSaveMsg(body.enabled ? `Saved ${body.saved} account(s) to Supabase` : 'Supabase not configured on the backend');
     } catch (e) {
       setSaveMsg(`Save failed: ${e.message}`);
@@ -305,73 +342,111 @@ function App() {
   }
 
   return (
-    <main className="app-shell bg-[#151819] text-slate-100">
-      <header className="topbar shadow-[0_1px_0_rgba(255,255,255,.08)]">
-        <nav className="tabs" aria-label="Main sections">
+    <main className="app-shell app-shell-sidebar">
+      <aside className="app-sidebar" aria-label="Main sections">
+        <div className="sidebar-brand">
+          <span className="sidebar-brand-mark"><BarChart3 size={17} /></span>
+          <span>
+            <strong>AlphaHedge</strong>
+            <em>Multitrade</em>
+          </span>
+        </div>
+
+        <nav className="sidebar-nav">
           {[
-            ['orders', 'Order Book'],
-            ['positions', 'Positions'],
-            ['settings', 'User Settings'],
-            ['strategies', 'Strategies'],
-            ['multi-leg', 'Multi-leg'],
-          ].map(([key, label]) => (
+            ['users', 'Users', UsersRound],
+            ['feedmaster', 'Feedmaster', Rss],
+            ['orders', 'Order Book', Database],
+            ['positions', 'Positions', BriefcaseBusiness],
+            ['settings', 'User Settings', Settings2],
+            ['strategies', 'Strategies', BarChart3],
+            ['multi-leg', 'Multi-leg', Layers],
+          ].map(([key, label, Icon]) => (
             <button
-              className={`tab ${activeTab === key ? 'active' : ''}`}
+              className={`sidebar-link ${activeTab === key ? 'active' : ''}`}
               key={key}
               onClick={() => setActiveTab(key)}
               type="button"
+              title={label}
             >
-              {label}
+              <Icon size={16} />
+              <span>{label}</span>
             </button>
           ))}
         </nav>
-        <section className="actions" aria-label="Account actions">
-          {saveMsg && <span className="save-msg" style={{ alignSelf: 'center', fontSize: '0.85em', color: '#555' }}>{saveMsg}</span>}
-          <button className="btn secondary" onClick={addClient} type="button">Add Client</button>
-          <button className="btn secondary" onClick={saveToSupabase} type="button" title="Save all accounts to Supabase">Save to Supabase</button>
-          <button className="btn primary" onClick={runAutoLogin} type="button">Auto Login</button>
-        </section>
-      </header>
+      </aside>
 
-      {activeTab === 'settings' && (
-        <UserSettings
-          backendUrl={backendUrl}
-          clients={clients}
-          demoMode={demoMode}
-          onBackendUrlChange={setBackendUrl}
-          onClientChange={updateClient}
-          onDeleteClient={deleteClient}
-          onDemoModeChange={setDemoMode}
-          onLogoutClient={logoutClient}
-          onToggleSelected={toggleSelected}
-          selectedRows={selectedRows}
-        />
-      )}
+      <section className="app-workspace">
+        <header className="workspace-topbar">
+          <div className="workspace-title">
+            <strong>{sectionTitle(activeTab)}</strong>
+            <span>{sectionSubtitle(activeTab)}</span>
+          </div>
+          <section className="actions" aria-label="Account actions">
+            {saveMsg && <span className="save-msg">{saveMsg}</span>}
+            <button className="btn secondary" onClick={addClient} type="button"><Plus size={15} /> Add Client</button>
+            <button className="btn secondary" onClick={saveToSupabase} type="button" title="Save all accounts to Supabase">Save to Supabase</button>
+            <button className="btn primary" onClick={runAutoLogin} type="button">Auto Login</button>
+          </section>
+        </header>
 
-      {mountedTabs.has('strategies') && (
-        <div className="tab-keepalive" style={{ display: activeTab === 'strategies' ? 'contents' : 'none' }}>
-          <Strategies
-            clients={clients}
-            demoMode={demoMode}
-            onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
-          />
+        <div className="app-content">
+          {activeTab === 'settings' && (
+            <UserSettings
+              backendUrl={backendUrl}
+              clients={clients}
+              demoMode={demoMode}
+              onBackendUrlChange={setBackendUrl}
+              onClientChange={updateClient}
+              onDeleteClient={deleteClient}
+              onDemoModeChange={setDemoMode}
+              onLogoutClient={logoutClient}
+              onToggleSelected={toggleSelected}
+              selectedRows={selectedRows}
+            />
+          )}
+
+          {activeTab === 'users' && <UsersView />}
+
+          {activeTab === 'feedmaster' && <FeedmasterView />}
+
+          {mountedTabs.has('strategies') && (
+            <div className="tab-keepalive" style={{ display: activeTab === 'strategies' ? 'contents' : 'none' }}>
+              <Strategies
+                clients={clients}
+                demoMode={demoMode}
+                onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
+              />
+            </div>
+          )}
+
+          {mountedTabs.has('orders') && (
+            <div className="tab-keepalive" style={{ display: activeTab === 'orders' ? 'contents' : 'none' }}>
+              <OrderBookView
+                clients={clients}
+                demoMode={demoMode}
+                active={activeTab === 'orders'}
+                onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
+              />
+            </div>
+          )}
+
+          {mountedTabs.has('positions') && (
+            <div className="tab-keepalive" style={{ display: activeTab === 'positions' ? 'contents' : 'none' }}>
+              <PositionBookView
+                clients={clients}
+                demoMode={demoMode}
+                active={activeTab === 'positions'}
+                onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
+              />
+            </div>
+          )}
+
+          {activeTab !== 'settings' && activeTab !== 'users' && activeTab !== 'feedmaster' && activeTab !== 'strategies' && activeTab !== 'orders' && activeTab !== 'positions' && (
+            <EmptyState title={activeTab === 'orders' ? 'Order Book' : activeTab === 'positions' ? 'Positions' : 'Multi-leg'} />
+          )}
         </div>
-      )}
-
-      {mountedTabs.has('orders') && (
-        <div className="tab-keepalive" style={{ display: activeTab === 'orders' ? 'contents' : 'none' }}>
-          <OrderBookView
-            clients={clients}
-            demoMode={demoMode}
-            active={activeTab === 'orders'}
-            onClientSession={(index, session) => updateClient(index, { session, loggedIn: !!session?.jwtToken })}
-          />
-        </div>
-      )}
-
-      {activeTab !== 'settings' && activeTab !== 'strategies' && activeTab !== 'orders' && (
-        <EmptyState title={activeTab === 'orders' ? 'Order Book' : activeTab === 'positions' ? 'Positions' : 'Multi-leg'} />
-      )}
+      </section>
     </main>
   );
 }
@@ -444,6 +519,30 @@ function UserSettings({
   );
 }
 
+function sectionTitle(activeTab) {
+  return {
+    users: 'Users',
+    feedmaster: 'Feedmaster',
+    orders: 'Order Book',
+    positions: 'Positions',
+    settings: 'User Settings',
+    strategies: 'Strategies',
+    'multi-leg': 'Multi-leg',
+  }[activeTab] || 'AlphaHedge';
+}
+
+function sectionSubtitle(activeTab) {
+  return {
+    users: 'Alias-based users from Supabase broker accounts',
+    feedmaster: 'Shared live feed account selector',
+    orders: 'Live order and trade books',
+    positions: 'Live net position book',
+    settings: 'Broker account credentials and login state',
+    strategies: 'Option chain and basket workflow',
+    'multi-leg': 'Multi-leg workflow',
+  }[activeTab] || '';
+}
+
 function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelected, selected }) {
   const stateClass = client.status?.includes('Logging') ? 'running' : client.loggedIn ? 'success' : client.status !== 'Idle' ? 'failed' : '';
 
@@ -465,10 +564,10 @@ function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelect
       <td><Select value={client.marketOrders} onChange={(marketOrders) => onChange(index, { marketOrders })} options={['Allowed', 'Blocked']} /></td>
       <td><TextInput className="alias" value={client.alias} onChange={(alias) => onChange(index, { alias })} /></td>
       <td><TextInput className="client-code" value={client.clientCode} onChange={(clientCode) => onChange(index, { clientCode })} /></td>
-      <td><Select value={client.broker} onChange={(broker) => onChange(index, { broker })} options={['Angel', 'Upstox', 'APITest', 'KotakNeoV3']} /></td>
+      <td><Select value={client.broker} onChange={(broker) => onChange(index, { broker })} options={['Angel', 'Upstox', 'APITest', 'KotakNeoV3', 'Nubra']} /></td>
       <td><TextInput className={`api-key cred-box${client.apiKey ? ' filled' : ''}`} placeholder="Enter API key" value={client.apiKey} onChange={(apiKey) => onChange(index, { apiKey })} /></td>
-      <td><TextInput className={`api-secret cred-box${client.apiSecret ? ' filled' : ''}`} placeholder="API secret" type="password" value={client.apiSecret} onChange={(apiSecret) => onChange(index, { apiSecret })} /></td>
-      <td><TextInput className={`totp-secret cred-box${client.totpSecret ? ' filled' : ''}`} placeholder="TOTP secret" type="password" value={client.totpSecret} onChange={(totpSecret) => onChange(index, { totpSecret })} /></td>
+      <td><TextInput className={`api-secret cred-box${client.apiSecret ? ' filled' : ''}`} placeholder={client.broker === 'Nubra' ? 'Setup session token' : 'API secret'} type="password" value={client.apiSecret} onChange={(apiSecret) => onChange(index, { apiSecret })} /></td>
+      <td><TextInput className={`totp-secret cred-box${client.totpSecret ? ' filled' : ''}`} placeholder={client.broker === 'Nubra' ? 'TOTP secret / auto-fill' : 'TOTP secret'} type="password" value={client.totpSecret} onChange={(totpSecret) => onChange(index, { totpSecret })} /></td>
       <td><TextInput className={`pin cred-box${client.pin ? ' filled' : ''}`} placeholder="PIN" type="password" value={client.pin} onChange={(pin) => onChange(index, { pin })} /></td>
       <td><TextInput className={`phone cred-box${client.phone ? ' filled' : ''}`} placeholder="Mobile" value={client.phone} onChange={(phone) => onChange(index, { phone })} /></td>
       <td><input checked={!!client.autoLogin} onChange={(event) => onChange(index, { autoLogin: event.target.checked })} type="checkbox" title="Auto Login (Upstox: mobile → TOTP → PIN, fully automated)" /></td>
@@ -476,6 +575,488 @@ function ClientRow({ client, index, onChange, onDelete, onLogout, onToggleSelect
       <td><TextInput type="time" value={client.sqoffTime} onChange={(sqoffTime) => onChange(index, { sqoffTime })} /></td>
       <td className="status">{client.status || 'Idle'}</td>
     </tr>
+  );
+}
+
+const FEEDMASTER_KEY = 'ahc_feed_master_account';
+const FEEDMASTER_CHANGED = 'feedmaster:changed';
+
+const FEED_BROKERS_LOCAL = [
+  { id: 'angelone', label: 'Angel One', apiPath: 'angel' },
+  { id: 'angel', label: 'Angel One', apiPath: 'angel' },
+  { id: 'upstox', label: 'Upstox', apiPath: 'upstox' },
+  { id: 'kotak', label: 'Kotak Neo', apiPath: 'kotak' },
+  { id: 'kotakneov3', label: 'Kotak Neo', apiPath: 'kotak' },
+  { id: 'nubra', label: 'Nubra', apiPath: 'nubra' },
+];
+
+async function apiGetLocal(path) {
+  const response = await fetch(`/api${path}`, { headers: { 'Content-Type': 'application/json' } });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.success === false || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+  return body;
+}
+
+async function apiPostLocal(path, payload = {}) {
+  const response = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.success === false || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+  return body;
+}
+
+function brokerMeta(name = '') {
+  const normalized = String(name).toLowerCase().replace(/\s/g, '');
+  return FEED_BROKERS_LOCAL.find((broker) => broker.id === normalized) || FEED_BROKERS_LOCAL.find((broker) => normalized.includes(broker.id));
+}
+
+function brokerLabel(name = '') {
+  return brokerMeta(name)?.label || name || '-';
+}
+
+function getSavedFeedmasterLocal() {
+  try { return JSON.parse(localStorage.getItem(FEEDMASTER_KEY)) || null; } catch { return null; }
+}
+
+function saveFeedmasterLocal(setting) {
+  localStorage.setItem(FEEDMASTER_KEY, JSON.stringify(setting));
+  window.dispatchEvent(new CustomEvent(FEEDMASTER_CHANGED, { detail: setting }));
+}
+
+function feedSessionKey(configId) {
+  return `ahc_session_${configId}`;
+}
+
+function getFeedSession(configId) {
+  try { return JSON.parse(localStorage.getItem(feedSessionKey(configId))) || null; } catch { return null; }
+}
+
+function saveFeedSession(configId, session) {
+  if (configId && session) localStorage.setItem(feedSessionKey(configId), JSON.stringify(session));
+}
+
+function brokerClientFromConfig(config) {
+  const session = getFeedSession(config.id);
+  return {
+    enabled: true,
+    broker: config.broker_name,
+    configId: config.id,
+    userId: config.user_id || '',
+    clientCode: config.account_id,
+    apiKey: config.app_key,
+    apiSecret: config.app_secret,
+    accessToken: config.app_key || config.app_secret,
+    ucc: config.account_id,
+    pin: config.pin,
+    mpin: config.pin,
+    totpSecret: config.totp_secret,
+    phone: config.phone,
+    mobileNumber: config.phone,
+    autoLogin: true,
+    session,
+    loggedIn: !!(session?.jwtToken || session?.accessToken || session?.tradeToken || session?.sessionToken),
+  };
+}
+
+async function brokerAutoLoginLocal(config, { feedRegister = false, userName = '' } = {}) {
+  const client = brokerClientFromConfig(config);
+  if (feedRegister) {
+    client.feedRegister = true;
+    client.userName = userName;
+  }
+  const apiPath = brokerMeta(config.broker_name)?.apiPath || 'angel';
+  const response = await fetch(`/api/${apiPath}/auto-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client, ...client, feedRegister, userName }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status === false) {
+    if (body.needsOtp || body.needsLogin) return body;
+    throw new Error(body.message || `HTTP ${response.status}`);
+  }
+  if (body.session) saveFeedSession(config.id, body.session);
+  return body;
+}
+
+function UsersView() {
+  const [users, setUsers] = useState([]);
+  const [status, setStatus] = useState('Loading users...');
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState('');
+  const [form, setForm] = useState({ username: '', email: '', mobile: '' });
+  const [brokerUser, setBrokerUser] = useState(null);
+  const [brokerConfigs, setBrokerConfigs] = useState([]);
+  const [brokerLoading, setBrokerLoading] = useState(false);
+
+  useEffect(() => { loadUsers(); }, []);
+
+  async function loadUsers() {
+    setLoading(true);
+    setStatus('Loading users...');
+    try {
+      const body = await apiGetLocal('/users/list');
+      setUsers(body.data || []);
+      setStatus(`${(body.data || []).length} users loaded`);
+    } catch (error) {
+      setStatus(error.message || 'Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function editUser(user) {
+    setEditingId(String(user.id));
+    setForm({
+      username: user.username || '',
+      email: user.email || '',
+      mobile: user.mobile || '',
+    });
+  }
+
+  function clearForm() {
+    setEditingId('');
+    setForm({ username: '', email: '', mobile: '' });
+  }
+
+  async function saveUser() {
+    if (!form.username.trim()) {
+      setStatus('Username is required');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (editingId) {
+        await apiPostLocal('/users/update', { id: editingId, ...form });
+        setStatus('User updated');
+      } else {
+        await apiPostLocal('/users/create', form);
+        setStatus('User created');
+      }
+      clearForm();
+      await loadUsers();
+    } catch (error) {
+      setStatus(error.message || 'Failed to save user');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteUser(user) {
+    if (!window.confirm(`Delete user "${user.username}"?`)) return;
+    setLoading(true);
+    try {
+      await apiPostLocal('/users/delete', { id: user.id });
+      setStatus('User deleted');
+      await loadUsers();
+    } catch (error) {
+      setStatus(error.message || 'Failed to delete user');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function openBrokerConfig(user) {
+    setBrokerUser(user);
+    setBrokerConfigs([]);
+    setBrokerLoading(true);
+    setStatus(`Loading broker accounts for ${user.username || user.id}...`);
+    try {
+      const body = await apiGetLocal(`/users/broker-config/list?user_id=${encodeURIComponent(user.id)}`);
+      setBrokerConfigs(body.data || []);
+      setStatus(`${(body.data || []).length} broker accounts loaded for ${user.username || user.id}`);
+    } catch (error) {
+      setStatus(error.message || 'Failed to load broker accounts');
+    } finally {
+      setBrokerLoading(false);
+    }
+  }
+
+  const totalBrokers = users.reduce((sum, user) => sum + Number(user.brokers || 0), 0);
+
+  return (
+    <section className="users-view">
+      <header className="user-page-head">
+        <div>
+          <span className="section-kicker">Supabase users</span>
+          <h2>Users</h2>
+          <p>Each user is an alias. Broker account rows under the same alias belong to that user.</p>
+        </div>
+        <button className="btn secondary" type="button" disabled={loading} onClick={loadUsers}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </header>
+
+      <div className="user-metrics">
+        <div>
+          <span>Total Users</span>
+          <strong>{users.length}</strong>
+          <em>Distinct aliases</em>
+        </div>
+        <div>
+          <span>Broker Accounts</span>
+          <strong>{totalBrokers}</strong>
+          <em>Supabase rows</em>
+        </div>
+        <div>
+          <span>Selected User</span>
+          <strong>{brokerUser?.username || '-'}</strong>
+          <em>{brokerConfigs.length} linked accounts</em>
+        </div>
+      </div>
+
+      <div className="config-strip user-editor-strip" aria-label="User editor">
+        <label>
+          Username
+          <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="User alias" />
+        </label>
+        <label>
+          Email
+          <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Email" />
+        </label>
+        <label>
+          Mobile
+          <input value={form.mobile} onChange={(event) => setForm({ ...form, mobile: event.target.value })} placeholder="Mobile" />
+        </label>
+        <div className="inline-actions">
+          <button className="btn primary" type="button" disabled={loading} onClick={saveUser}>
+            {editingId ? <Pencil size={15} /> : <Plus size={15} />}
+            {editingId ? 'Save User' : 'Add User'}
+          </button>
+          {editingId && <button className="btn secondary" type="button" onClick={clearForm}>Cancel</button>}
+        </div>
+      </div>
+
+      <div className="book-status">{status}</div>
+
+      <div className="users-grid">
+        <div className="book-table-wrap user-table-card">
+          <table className="book-table app-admin-table">
+            <thead>
+              <tr>
+                <th>User Alias</th>
+                <th>Email</th>
+                <th>Mobile</th>
+                <th>Brokers</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id} className={brokerUser?.id === user.id ? 'selected-row' : ''}>
+                  <td>
+                    <div className="user-name-cell">
+                      <span><UserRound size={15} /></span>
+                      <strong>{user.username || '-'}</strong>
+                    </div>
+                  </td>
+                  <td>{user.email || '-'}</td>
+                  <td>{user.mobile || '-'}</td>
+                  <td><span className="book-tag product">{user.brokers ?? 0} broker{Number(user.brokers || 0) === 1 ? '' : 's'}</span></td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="icon" type="button" title="Broker Config" onClick={() => openBrokerConfig(user)}><Settings2 size={14} /></button>
+                      <button className="icon" type="button" title="Edit User" onClick={() => editUser(user)}><Pencil size={14} /></button>
+                      <button className="icon danger" type="button" title="Delete User" onClick={() => deleteUser(user)}><Trash2 size={14} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!users.length && (
+                <tr><td className="book-empty" colSpan="5">No users to show</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <aside className="broker-config-panel">
+          <div className="broker-panel-head">
+            <div>
+              <span className="section-kicker">Broker Config</span>
+              <strong>{brokerUser?.username || 'Select a user'}</strong>
+            </div>
+            {brokerLoading && <RefreshCw size={15} className="spin" />}
+          </div>
+
+          {!brokerUser && (
+            <div className="broker-empty">Select a user row to inspect broker accounts.</div>
+          )}
+
+          {brokerUser && brokerConfigs.length === 0 && !brokerLoading && (
+            <div className="broker-empty">No broker accounts saved for this alias yet.</div>
+          )}
+
+          {brokerConfigs.map((config) => (
+            <div className="broker-config-card" key={config.id}>
+              <div>
+                <strong>{brokerLabel(config.broker_name)}</strong>
+                <span>{config.account_id || 'No account ID'}</span>
+              </div>
+              <em>{config.totp_secret ? 'TOTP set' : 'TOTP missing'}</em>
+            </div>
+          ))}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function FeedmasterView() {
+  const [users, setUsers] = useState([]);
+  const [configs, setConfigs] = useState([]);
+  const [userId, setUserId] = useState('');
+  const [configId, setConfigId] = useState('');
+  const [status, setStatus] = useState('Loading users...');
+  const [loading, setLoading] = useState(false);
+
+  const selectedConfig = configs.find((config) => String(config.id) === String(configId));
+  const selectedUser = users.find((user) => String(user.id) === String(userId));
+  const canSave = Boolean(userId && configId);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = getSavedFeedmasterLocal();
+        const body = await apiGetLocal('/users/list');
+        if (cancelled) return;
+        const list = body.data || [];
+        setUsers(list);
+        setUserId(saved?.userId ? String(saved.userId) : String(list[0]?.id || ''));
+        setConfigId(saved?.configId ? String(saved.configId) : '');
+        setStatus(saved?.configId ? 'Saved Feedmaster loaded' : 'Select a feed account');
+      } catch (error) {
+        if (!cancelled) setStatus(error.message || 'Failed to load users');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!userId) {
+        setConfigs([]);
+        setConfigId('');
+        return;
+      }
+      try {
+        const saved = getSavedFeedmasterLocal();
+        const body = await apiGetLocal(`/users/broker-config/list?user_id=${encodeURIComponent(userId)}`);
+        if (cancelled) return;
+        const list = body.data || [];
+        setConfigs(list);
+        if (saved?.userId && String(saved.userId) === String(userId) && saved?.configId) setConfigId(String(saved.configId));
+        else setConfigId(String(list[0]?.id || ''));
+      } catch (error) {
+        if (!cancelled) setStatus(error.message || 'Failed to load broker accounts');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  function saveFeedmaster() {
+    if (!canSave) {
+      setStatus('Select a user and broker account first');
+      return;
+    }
+    saveFeedmasterLocal({
+      userId,
+      configId,
+      broker: selectedConfig?.broker_name || '',
+      accountId: selectedConfig?.account_id || '',
+    });
+    setStatus('Feedmaster saved');
+  }
+
+  async function testLogin() {
+    if (!selectedConfig) {
+      setStatus('Select a broker account first');
+      return;
+    }
+    setLoading(true);
+    setStatus('Testing feed account login...');
+    try {
+      const body = await brokerAutoLoginLocal(selectedConfig, {
+        feedRegister: true,
+        userName: selectedUser?.username || userId,
+      });
+      if (body.needsOtp) setStatus('Nubra needs one-time OTP');
+      else if (body.needsLogin) setStatus('Upstox needs browser login');
+      else {
+        saveFeedmaster();
+        setStatus(body.sessionSource === 'session' ? 'Feedmaster live - session reused' : 'Feedmaster live - fresh login saved');
+      }
+    } catch (error) {
+      setStatus(error.message || 'Feedmaster login failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function clearFeedmaster() {
+    localStorage.removeItem(FEEDMASTER_KEY);
+    setConfigId('');
+    setStatus('Feedmaster cleared');
+  }
+
+  const saved = getSavedFeedmasterLocal();
+
+  return (
+    <section className="book-view">
+      <header className="book-top-tabs" aria-label="Feedmaster">
+        <div className="book-tabs" role="tablist">
+          <button className="active" type="button">Feedmaster</button>
+          <button className="muted" disabled type="button">Live Feed</button>
+          <button className="muted" disabled type="button">Sessions</button>
+        </div>
+      </header>
+
+      <div className="config-strip feedmaster-strip" aria-label="Feedmaster selector">
+        <label>
+          User
+          <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+            {users.map((user) => <option key={user.id} value={String(user.id)}>{user.username || `User ${user.id}`}</option>)}
+          </select>
+        </label>
+        <label>
+          Broker Account
+          <select value={configId} onChange={(event) => setConfigId(event.target.value)} disabled={!configs.length}>
+            {configs.map((config) => (
+              <option key={config.id} value={String(config.id)}>
+                {brokerLabel(config.broker_name)} - {config.account_id || config.id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="inline-actions">
+          <button className="btn primary" type="button" disabled={!canSave || loading} onClick={saveFeedmaster}>Save Feedmaster</button>
+          <button className="btn secondary" type="button" disabled={!canSave || loading} onClick={testLogin}>Test Login</button>
+          <button className="btn secondary" type="button" onClick={clearFeedmaster}>Clear</button>
+        </div>
+      </div>
+
+      <div className="book-summary">
+        <div>
+          <span>Current User</span>
+          <strong>{saved?.userId || '-'}</strong>
+          <em>Saved feed owner</em>
+        </div>
+        <div>
+          <span>Broker</span>
+          <strong>{brokerLabel(saved?.broker) || '-'}</strong>
+          <em>{saved?.accountId || 'No account saved'}</em>
+        </div>
+        <div>
+          <span>Status</span>
+          <strong>{status}</strong>
+          <em>{configs.length} accounts available</em>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -959,6 +1540,234 @@ function bookSummary(rows) {
     }
     return acc;
   }, { buyCount: 0, sellCount: 0, buyValue: 0, sellValue: 0 });
+}
+
+function PositionBookView({ clients, demoMode, onClientSession, active = true }) {
+  const [clientIndex, setClientIndex] = useState(0);
+  const [rows, setRows] = useState([]);
+  const [status, setStatus] = useState('Select a logged-in account');
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const loadedRef = useRef(false);
+
+  const loggedInIndexes = useMemo(
+    () => clients.map((client, index) => (client.loggedIn ? index : -1)).filter((index) => index >= 0),
+    [clients],
+  );
+  const selectedClient = clients[clientIndex];
+
+  useEffect(() => {
+    if (loggedInIndexes.length && !loggedInIndexes.includes(clientIndex)) {
+      setClientIndex(loggedInIndexes[0]);
+    }
+  }, [loggedInIndexes, clientIndex]);
+
+  useEffect(() => {
+    loadedRef.current = false;
+    setRows([]);
+  }, [clientIndex, demoMode]);
+
+  useEffect(() => {
+    if (!active || !selectedClient?.loggedIn || demoMode || loadedRef.current) return;
+    loadPositions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, clientIndex, selectedClient?.loggedIn, selectedClient?.session?.jwtToken, demoMode]);
+
+  async function loadPositions(force = false) {
+    const client = clients[clientIndex];
+    if (!client?.loggedIn) {
+      setStatus('Log in an account first');
+      return;
+    }
+    if (demoMode) {
+      setStatus('Disable demo mode for live positions');
+      return;
+    }
+    if (loadedRef.current && !force) return;
+
+    setLoading(true);
+    setStatus('Loading positions...');
+    try {
+      const response = await fetch('/api/angel/positions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+      if (body.session?.jwtToken) onClientSession?.(clientIndex, body.session);
+      const nextRows = body.positions || [];
+      setRows(nextRows);
+      loadedRef.current = true;
+      setStatus(`${nextRows.length} positions loaded`);
+    } catch (error) {
+      loadedRef.current = false;
+      setStatus(error.message || 'Positions load failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const visibleRows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((row) => JSON.stringify(row).toLowerCase().includes(needle));
+  }, [rows, query]);
+
+  const summary = useMemo(() => positionSummary(visibleRows), [visibleRows]);
+
+  return (
+    <section className="book-view">
+      <header className="book-top-tabs" aria-label="Position sections">
+        <div className="book-tabs" role="tablist" aria-label="Position book tabs">
+          <button className="active" type="button">Position Book</button>
+          <button className="muted" disabled type="button">Holdings</button>
+          <button className="muted" disabled type="button">Groups</button>
+          <button className="muted" disabled type="button">Reports</button>
+        </div>
+      </header>
+
+      <div className="book-toolbar">
+        <label className="book-search">
+          <Search size={18} aria-hidden="true" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search positions" />
+        </label>
+        <button className="book-filter" type="button" title="Filters">≡</button>
+        <div className="book-toolbar-spacer" />
+        <PillSelect
+          title="Account"
+          value={String(clientIndex)}
+          onChange={(value) => setClientIndex(Number(value))}
+          options={clients.map((client, index) => ({
+            value: String(index),
+            label: client.alias || client.clientCode || `Client ${index + 1}`,
+            pill: client.loggedIn ? 'ON' : 'OFF',
+            pillClass: client.loggedIn ? 'pill-idx' : 'pill-eq',
+          }))}
+        />
+        <button className="btn secondary" disabled={loading} type="button" onClick={() => loadPositions(true)}>
+          {loading ? 'Loading' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="book-summary">
+        <div>
+          <span className="buy">Long Positions</span>
+          <strong>{summary.longCount}</strong>
+          <em>Net qty above zero</em>
+        </div>
+        <div>
+          <span className="sell">Short Positions</span>
+          <strong>{summary.shortCount}</strong>
+          <em>Net qty below zero</em>
+        </div>
+        <div>
+          <span>Total P&amp;L</span>
+          <strong className={summary.pnl >= 0 ? 'book-buy' : 'book-sell'}>{formatMoney(summary.pnl)}</strong>
+          <em>{visibleRows.length} Positions</em>
+        </div>
+      </div>
+
+      <div className="book-status">{status}</div>
+
+      <div className="book-table-wrap">
+        <table className="book-table">
+          <thead>
+            <tr>
+              {['Stock Name', 'Product Type', 'Net Qty.', 'Buy Avg', 'Sell Avg', 'LTP', 'P&L'].map((heading) => <th key={heading}>{heading}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((row, index) => (
+              <tr key={positionRowKey(row, index)}>
+                <td><BookStockCell row={row} /></td>
+                <td><PositionProductCell row={row} /></td>
+                <td><PositionQtyCell row={row} /></td>
+                <td>{formatBookPrice(positionBuyAvg(row))}</td>
+                <td>{formatBookPrice(positionSellAvg(row))}</td>
+                <td><span className="book-ltp">{formatBookPrice(positionValue(row, ['ltp', 'LTP', 'lasttradedprice']))}</span></td>
+                <td><span className={pnlOf(row) >= 0 ? 'book-buy' : 'book-sell'}>{formatMoney(pnlOf(row))}</span></td>
+              </tr>
+            ))}
+            {!visibleRows.length && (
+              <tr><td className="book-empty" colSpan="7">No positions to show</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function PositionProductCell({ row }) {
+  const qty = Number(row.netqty || row.net_qty || 0);
+  const product = compactProductTag(row.producttype || row.product_type || '-');
+  return (
+    <div className="book-product-cell">
+      {qty !== 0 && <span className={`book-tag side ${qty > 0 ? 'buy' : 'sell'}`}>{qty > 0 ? 'LONG' : 'SHORT'}</span>}
+      <span className="book-tag product">{product}</span>
+    </div>
+  );
+}
+
+function PositionQtyCell({ row }) {
+  const qty = Number(row.netqty || row.net_qty || 0);
+  return (
+    <div className="book-qty-cell">
+      <span className={qty >= 0 ? 'book-buy' : 'book-sell'}>{qty.toLocaleString('en-IN')}</span>
+      <small>{row.lotsize ? `Lot ${row.lotsize}` : ''}</small>
+    </div>
+  );
+}
+
+function positionSummary(rows) {
+  return rows.reduce((acc, row) => {
+    const qty = Number(row.netqty || row.net_qty || 0);
+    if (qty > 0) acc.longCount += 1;
+    if (qty < 0) acc.shortCount += 1;
+    acc.pnl += pnlOf(row);
+    return acc;
+  }, { longCount: 0, shortCount: 0, pnl: 0 });
+}
+
+function pnlOf(row) {
+  if (row.pnl != null && row.pnl !== '') return Number(row.pnl) || 0;
+  return (Number(row.realised || 0) || 0) + (Number(row.unrealised || 0) || 0);
+}
+
+function positionValue(row, keys) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value != null && value !== '' && Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
+function positionBuyAvg(row) {
+  const direct = positionValue(row, ['totalbuyavgprice', 'buyavgprice', 'buyAvgPrice', 'buyaverageprice', 'buy_avg_price', 'buyAvg', 'cfbuyavgprice']);
+  if (direct) return direct;
+  const amount = positionValue(row, ['totalbuyvalue', 'buyamount', 'buyAmount', 'cfbuyamount', 'buy_value', 'buyValue']);
+  const qty = Math.abs(positionValue(row, ['totalbuyqty', 'buyqty', 'buyQty', 'buyquantity', 'cfbuyqty']));
+  return amount && qty ? amount / qty : 0;
+}
+
+function positionSellAvg(row) {
+  const direct = positionValue(row, ['totalsellavgprice', 'sellavgprice', 'sellAvgPrice', 'sellaverageprice', 'sell_avg_price', 'sellAvg', 'cfsellavgprice']);
+  if (direct) return direct;
+  const amount = positionValue(row, ['totalsellvalue', 'sellamount', 'sellAmount', 'cfsellamount', 'sell_value', 'sellValue']);
+  const qty = Math.abs(positionValue(row, ['totalsellqty', 'sellqty', 'sellQty', 'sellquantity', 'cfsellqty']));
+  return amount && qty ? amount / qty : 0;
+}
+
+function positionRowKey(row, fallback) {
+  return [
+    row.symboltoken,
+    row.tradingsymbol,
+    row.exchange,
+    row.producttype || row.product_type,
+    row.netqty || row.net_qty,
+    fallback,
+  ].filter((value) => value != null && value !== '').join('|');
 }
 
 // Fallback strike interval, used only when the live strike ladder can't be
@@ -2381,6 +3190,94 @@ async function kotakLogin(client) {
   };
 }
 
+// nubraLogin follows Nubra's full-automation model: keep the shared TOTP secret
+// once, then generate fresh login TOTPs server-side on every login. API Secret
+// is used only as a one-time setup session token when the TOTP secret is absent
+// or the saved secret is rejected.
+async function nubraLogin(client) {
+  const basePayload = {
+    phone: client.phone || '',
+    mpin: client.pin || '',
+    totpSecret: client.totpSecret || '',
+    clientCode: client.clientCode || '',
+  };
+  const labels = {
+    phone: 'Phone',
+    mpin: 'PIN (MPIN)',
+  };
+  const missing = Object.keys(labels).filter((k) => !basePayload[k]);
+  if (missing.length) throw new Error(`Fill in: ${missing.map((k) => labels[k]).join(', ')}`);
+
+  let generatedSecret = '';
+  let sessionSourceHint = '';
+  let payload = basePayload;
+
+  if (!payload.totpSecret && client.apiSecret) {
+    const setup = await nubraSetupTOTP(client);
+    generatedSecret = setup.totpSecret || '';
+    if (!generatedSecret) throw new Error('Nubra TOTP setup did not return a TOTP secret');
+    payload = { ...basePayload, totpSecret: generatedSecret };
+    sessionSourceHint = 'totp-setup';
+  } else if (!payload.totpSecret) {
+    throw new Error('Fill in: TOTP Secret, or paste Nubra first-time session token in API Secret');
+  }
+
+  try {
+    return await nubraAutoLoginPayload(payload, generatedSecret, sessionSourceHint);
+  } catch (error) {
+    if (!client.apiSecret || generatedSecret || !looksLikeTOTPError(error)) throw error;
+    const setup = await nubraSetupTOTP(client);
+    generatedSecret = setup.totpSecret || '';
+    if (!generatedSecret) throw error;
+    return nubraAutoLoginPayload({ ...basePayload, totpSecret: generatedSecret }, generatedSecret, 'totp-setup');
+  }
+}
+
+async function nubraSetupTOTP(client) {
+  const response = await fetch('/api/nubra/totp/setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionToken: client.apiSecret || '',
+      mpin: client.pin || '',
+      phone: client.phone || '',
+      clientCode: client.clientCode || '',
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+  return body;
+}
+
+async function nubraAutoLoginPayload(payload, generatedSecret = '', sessionSourceHint = '') {
+  const response = await fetch('/api/nubra/auto-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status === false) throw new Error(body.message || `HTTP ${response.status}`);
+
+  return {
+    availableMargin: body.availableMargin ?? 0,
+    availableCash: body.availableMargin ?? 0,
+    collateral: 0,
+    utilisedPayout: 0,
+    sessionSource: sessionSourceHint || body.sessionSource,
+    session: body.session || null,
+    totpSecret: generatedSecret,
+    clearSetupToken: !!generatedSecret,
+    mtmAll: 0,
+    misMtm: 0,
+    nrmlMtm: 0,
+  };
+}
+
+function looksLikeTOTPError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('totp') || message.includes('otp') || message.includes('invalid');
+}
+
 function demoLogin(client, index) {
   return new Promise((resolve, reject) => {
     window.setTimeout(() => {
@@ -2635,4 +3532,5 @@ function titleCase(value) {
   return `${value.slice(0, 1)}${value.slice(1).toLowerCase()}`;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+const rootElement = document.getElementById('root');
+if (rootElement) createRoot(rootElement).render(<App />);

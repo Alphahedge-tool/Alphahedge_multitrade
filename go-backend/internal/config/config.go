@@ -36,14 +36,14 @@ const (
 
 // Config holds resolved runtime settings.
 type Config struct {
-	Port         int
-	MasterFile   string
-	IndexFile    string
-	StaticRoot   string
-	LocalIP      string
-	PublicIP     string
-	MACAddress   string
-	FeedDebug    bool
+	Port       int
+	MasterFile string
+	IndexFile  string
+	StaticRoot string
+	LocalIP    string
+	PublicIP   string
+	MACAddress string
+	FeedDebug  bool
 
 	// Upstox OAuth app credentials (from account.upstox.com/developer/apps).
 	// The redirect URI must EXACTLY match what's registered on the Upstox app.
@@ -56,6 +56,10 @@ type Config struct {
 	// frontend's local IndexedDB only.
 	SupabaseURL        string
 	SupabaseServiceKey string
+
+	// Nubra REST API base. Defaults to the PROD host (real accounts live here);
+	// override with NUBRA_BASE_URL=https://uatapi.nubra.io to validate on UAT.
+	NubraBaseURL string
 }
 
 // Load builds a Config from the environment, mirroring the Node server's knobs
@@ -81,6 +85,8 @@ func Load() Config {
 
 		SupabaseURL:        os.Getenv("SUPABASE_URL"),
 		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_KEY"),
+
+		NubraBaseURL: envOr("NUBRA_BASE_URL", "https://api.nubra.io"),
 	}
 }
 

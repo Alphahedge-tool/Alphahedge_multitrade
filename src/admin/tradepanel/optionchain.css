@@ -1,0 +1,97 @@
+/* Standalone enriched option chain — CALL | STRIKE | PUT grid with Bid/Ask
+   columns from Upstox. Uses the AlphaHedge --ao-* design tokens. */
+
+.oc-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.oc-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.oc-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 8px;
+  background: var(--ao-surface);
+}
+
+.oc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.oc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ao-surface-2);
+  color: var(--ao-caption);
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 7px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--ao-border-soft);
+  white-space: nowrap;
+}
+
+.oc-side-head th { text-align: center; padding: 6px; }
+.oc-side-head .oc-call { color: var(--ao-green); background: var(--ao-green-bg); }
+.oc-side-head .oc-put { color: var(--ao-red); background: var(--ao-red-bg); }
+.oc-side-head .oc-strike { color: var(--ao-bold); }
+
+.oc-table td {
+  padding: 5px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--ao-border-soft);
+  color: var(--ao-base);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-row:hover td { background: var(--ao-hover); }
+
+/* ATM row emphasized. */
+.oc-atm td {
+  background: var(--ao-blue-surface) !important;
+  font-weight: 700;
+}
+
+/* In-the-money shading (subtle), CALL side left / PUT side right. */
+.oc-itm { background: rgba(0, 143, 117, 0.06); }
+
+.oc-ltp { font-weight: 700; color: var(--ao-bold); }
+.oc-ltp.oc-head { color: var(--ao-caption); }
+
+.oc-strike-cell {
+  text-align: center;
+  font-weight: 800;
+  color: var(--ao-bold);
+  background: var(--ao-surface-2);
+}
+
+.oc-iv { color: var(--ao-caption); font-size: 0.75rem; }
+
+/* Bid/Ask cell — bid green, ask red, subtle separator. */
+.oc-bidask { font-size: 0.75rem; }
+.oc-bid { color: var(--ao-green); font-weight: 600; }
+.oc-ask { color: var(--ao-red); font-weight: 600; }
+.oc-sep { color: var(--ao-placeholder); margin: 0 3px; }
+
+.oc-empty {
+  text-align: center !important;
+  color: var(--ao-caption);
+  padding: 32px !important;
+}

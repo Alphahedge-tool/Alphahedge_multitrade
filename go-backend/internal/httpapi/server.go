@@ -18,6 +18,7 @@ import (
 	"angelone-backend/internal/angel"
 	"angelone-backend/internal/config"
 	"angelone-backend/internal/kotak"
+	"angelone-backend/internal/nubra"
 	"angelone-backend/internal/supastore"
 	"angelone-backend/internal/upstox"
 )
@@ -31,11 +32,12 @@ type Server struct {
 	orderFeed *angel.OrderFeed
 	upstox    *upstox.Client
 	kotak     *kotak.Client
+	nubra     *nubra.Client
 	store     *supastore.Client // nil when Supabase isn't configured
 }
 
-func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed, orderFeed *angel.OrderFeed, ups *upstox.Client, kot *kotak.Client, store *supastore.Client) *Server {
-	return &Server{cfg: cfg, client: client, master: master, feed: feed, orderFeed: orderFeed, upstox: ups, kotak: kot, store: store}
+func New(cfg config.Config, client *angel.Client, master *angel.MasterStore, feed *angel.Feed, orderFeed *angel.OrderFeed, ups *upstox.Client, kot *kotak.Client, nub *nubra.Client, store *supastore.Client) *Server {
+	return &Server{cfg: cfg, client: client, master: master, feed: feed, orderFeed: orderFeed, upstox: ups, kotak: kot, nubra: nub, store: store}
 }
 
 // Handler builds the router.
@@ -90,6 +92,12 @@ func (s *Server) Handler() http.Handler {
 	// stored TOTP secret; no browser, no SMS OTP.
 	mux.HandleFunc("/api/kotak/auto-login", s.postJSON(s.handleKotakAutoLogin))
 
+	// Nubra REST: fully-headless TOTP login followed by MPIN verification.
+	mux.HandleFunc("/api/nubra/auto-login", s.postJSON(s.handleNubraAutoLogin))
+	mux.HandleFunc("/api/nubra/totp/setup", s.postJSON(s.handleNubraTOTPSetup))
+	mux.HandleFunc("/api/nubra/totp/generate-secret", s.postJSON(s.handleNubraTOTPGenerateSecret))
+	mux.HandleFunc("/api/nubra/totp/enable", s.postJSON(s.handleNubraTOTPEnable))
+
 	// ── Supabase-backed account storage ─────────────────────────────────────
 	// GET  → load all saved accounts (frontend fills the table on open)
 	// POST → save the current table back to Supabase {accounts:[...]}
@@ -126,8 +134,10 @@ func (s *Server) handleMasterIndex(w http.ResponseWriter, r *http.Request) {
 
 // handleAllScripOptions serves every option scrip for a symbol+expiry from our
 // master, mirroring Angel's all-scrip-options query shape. Two forms:
-//   GET  ?TradeSymbol=NIFTY&ExpiryDate=2026-07-07&MarketSegmentId=1  → pure master
-//   POST {client, TradeSymbol, ExpiryDate, MarketSegmentId}          → + spot/atm
+//
+//	GET  ?TradeSymbol=NIFTY&ExpiryDate=2026-07-07&MarketSegmentId=1  → pure master
+//	POST {client, TradeSymbol, ExpiryDate, MarketSegmentId}          → + spot/atm
+//
 // The POST form does one cheap spot LTP quote so the skeleton carries spot+atm.
 func (s *Server) handleAllScripOptions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -332,6 +342,7 @@ func (s *Server) handleOrderStream(w http.ResponseWriter, r *http.Request) {
 //     generated server-side).
 //   - otherwise → returns {needsLogin:true, loginUrl} so the frontend opens the
 //     one-click OAuth popup.
+//
 // Body: {userId, state?, autoLogin?, phone?, pin?, totpSecret?}.
 func (s *Server) handleUpstoxAutoLogin(ctx context.Context, body map[string]json.RawMessage) (any, error) {
 	var req struct {
@@ -452,6 +463,43 @@ func (s *Server) handleKotakAutoLogin(ctx context.Context, body map[string]json.
 	var req kotak.Creds
 	decodeReq(body, &req)
 	return s.kotak.AutoLogin(ctx, req)
+}
+
+// handleNubraAutoLogin logs a Nubra account in with the fully-headless
+// TOTP + MPIN REST flow: /totp/login -> /verifypin.
+func (s *Server) handleNubraAutoLogin(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req nubra.Creds
+	decodeReq(body, &req)
+	return s.nubra.AutoLogin(ctx, req)
+}
+
+// handleNubraTOTPSetup performs Nubra's one-time TOTP enrollment:
+// /totp/generate-secret -> locally generate the current TOTP -> /totp/enable.
+// Body: {sessionToken, deviceId?, mpin|pin, phone?, clientCode?}.
+func (s *Server) handleNubraTOTPSetup(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req nubra.TOTPSetupCreds
+	decodeReq(body, &req)
+	return s.nubra.SetupTOTP(ctx, req)
+}
+
+func (s *Server) handleNubraTOTPGenerateSecret(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req nubra.TOTPSetupCreds
+	decodeReq(body, &req)
+	res, err := s.nubra.GenerateTOTPSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": true, "broker": "nubra", "data": res}, nil
+}
+
+func (s *Server) handleNubraTOTPEnable(ctx context.Context, body map[string]json.RawMessage) (any, error) {
+	var req nubra.TOTPSetupCreds
+	decodeReq(body, &req)
+	res, err := s.nubra.EnableTOTP(ctx, req, req.TOTP)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": true, "broker": "nubra", "data": res}, nil
 }
 
 // handleAccounts loads (GET) or saves (POST) the broker accounts in Supabase.
