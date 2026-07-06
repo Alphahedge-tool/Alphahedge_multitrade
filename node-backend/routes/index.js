@@ -12,3 +12,4 @@ import './angelTradePanel.js';
 import './master.js';
 import './optionChain.js';
 import './feed.js';
+import './wsfeed.js';

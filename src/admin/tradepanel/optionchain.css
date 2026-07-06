@@ -1,39 +1,240 @@
 /* Standalone enriched option chain — CALL | STRIKE | PUT grid with Bid/Ask
    columns from Upstox. Uses the AlphaHedge --ao-* design tokens. */
 
+/* Page shell: a fixed-height flex column that owns the vertical space so ONLY
+   the table scrolls (like Get Position). .app-main is padded 18px (top+bottom
+   = 36px) and sits below the 64px MUI topbar; we pin this shell to the leftover
+   viewport height so the page itself never scrolls — the table container does. */
+.oc-page {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: calc(100vh - 64px - 36px); /* topbar (64) + .app-main vertical padding (36) */
+  overflow: hidden;
+}
+
+/* Header block stays put above the scrolling table. Kept tight (small title +
+   subtitle, minimal gap) so the option-chain container gets the most height. */
+.oc-page-head {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+.oc-page-head > .MuiTypography-root { margin: 0; }
+/* Shrink the page title + subtitle so they don't waste vertical space. */
+.oc-page-head > h5.MuiTypography-root { font-size: 1.05rem; line-height: 1.25; }
+.oc-page-head > .MuiTypography-body2,
+.oc-page-head > p.MuiTypography-root { font-size: 0.75rem; line-height: 1.2; }
+
+.oc-page-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #FFFFFF, #FBFCFF);
+  box-shadow: 0 1px 2px rgba(43, 47, 63, .04);
+}
+
+.oc-page-title h5.MuiTypography-root {
+  margin: 0;
+  color: var(--ao-bold);
+  font-size: 1.08rem;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.oc-page-title p.MuiTypography-root {
+  margin: 3px 0 0;
+  color: var(--ao-caption);
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.oc-page-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.oc-page-badges .MuiChip-root {
+  height: 24px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
 .oc-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  flex: 1;
+  min-width: 0;
+  min-height: 0; /* critical: lets the flex child (table-wrap) actually shrink */
+  overflow: hidden;
 }
 
 .oc-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  margin-bottom: 7px;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 8px;
+  background: var(--ao-surface);
+  box-shadow: 0 1px 2px rgba(43, 47, 63, .04);
+  flex-wrap: wrap;
+  flex: 0 0 auto; /* controls keep their height; table takes the rest */
+}
+
+.oc-controls-main,
+.oc-controls-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   flex-wrap: wrap;
 }
 
+.oc-controls-main {
+  min-width: 0;
+  flex: 1 1 520px;
+}
+
+.oc-controls-status {
+  justify-content: flex-end;
+  flex: 1 1 380px;
+}
+
+.oc-controls .MuiFormControl-root {
+  background: var(--ao-surface);
+}
+
+.oc-controls .MuiButton-root {
+  height: 38px;
+  white-space: nowrap;
+}
+
+.oc-controls .MuiChip-root {
+  height: 26px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.oc-controls .MuiChip-icon {
+  margin-left: 6px;
+}
+
+/* The live-feed hint line (a MUI Typography) is a direct flex child too — keep
+   it from stretching so the table wrap gets all remaining height. */
+.oc-panel > .MuiTypography-root {
+  flex: 0 0 auto;
+}
+
+/* THE scroll container: takes all leftover height and scrolls internally. The
+   thead is sticky (below), so column headers stay pinned while rows scroll. */
 .oc-table-wrap {
-  flex: 1;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  overflow-x: hidden;
+  scrollbar-gutter: stable both-edges;
   border: 1px solid var(--ao-border-soft);
   border-radius: 8px;
   background: var(--ao-surface);
 }
 
-.oc-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
+.oc-table-wrap > table.oc-table {
+  display: none;
 }
 
+.oc-split-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 116px minmax(0, 1fr);
+  align-items: start;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.oc-side-scroll {
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-x: scroll;
+  overflow-y: auto;
+  background: var(--ao-surface);
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  contain: paint;
+  will-change: scroll-position;
+}
+
+.oc-call-scroll {
+  border-right: 1px solid var(--ao-border-soft);
+}
+
+.oc-put-scroll {
+  border-left: 1px solid var(--ao-border-soft);
+}
+
+.oc-strike-pane {
+  z-index: 8;
+  width: 116px;
+  min-width: 116px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--ao-surface);
+  box-shadow:
+    -1px 0 0 var(--ao-border-soft),
+    1px 0 0 var(--ao-border-soft),
+    0 4px 10px rgba(43, 47, 63, .06);
+}
+
+.oc-table {
+  width: 2240px;
+  min-width: 2240px;
+  /* separate (not collapse) so sticky header cells keep their background and
+     borders don't bleed through while scrolling under them. */
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8rem;
+  table-layout: fixed;
+}
+
+.oc-side-table {
+  width: 936px;
+  min-width: 936px;
+}
+
+.oc-strike-table {
+  width: 116px;
+  min-width: 116px;
+}
+
+.oc-table .oc-col-oi { width: 132px; }
+.oc-table .oc-col-bidask { width: 145px; }
+.oc-table .oc-col-ltp { width: 118px; }
+.oc-table .oc-col-iv,
+.oc-table .oc-col-greek { width: 108px; }
+.oc-table .oc-col-strike { width: 116px; }
+
+/* Sticky header. Chrome only sticks table headers reliably when the sticky
+   declaration is on the CELLS (th) — thead/tr sticky is inconsistent — AND each
+   header row gets its own `top` so the two stacked rows don't overlap. Both
+   rows must be sticky; the row heights are fixed so the offsets are exact. */
 .oc-table thead th {
   position: sticky;
-  top: 0;
   z-index: 2;
   background: var(--ao-surface-2);
   color: var(--ao-caption);
@@ -47,18 +248,44 @@
   white-space: nowrap;
 }
 
+/* Row 1 (CALL|STRIKE|PUT band) pins to the very top; row 2 (column labels) pins
+   just beneath it. Fixed heights make the 28px offset exact. */
+.oc-table thead tr.oc-side-head th { top: 0; height: 28px; z-index: 4; }
+.oc-table thead tr.oc-col-head th { top: 28px; z-index: 3; }
+
 .oc-side-head th { text-align: center; padding: 6px; }
 .oc-side-head .oc-call { color: var(--ao-green); background: var(--ao-green-bg); }
 .oc-side-head .oc-put { color: var(--ao-red); background: var(--ao-red-bg); }
 .oc-side-head .oc-strike { color: var(--ao-bold); }
 
+.oc-table thead th.oc-strike,
+.oc-table thead th.oc-strike-col,
+.oc-strike-cell {
+  position: static;
+  left: auto;
+  z-index: auto;
+  box-shadow: none;
+}
+
+.oc-table thead th.oc-strike {
+  z-index: 9;
+}
+
+.oc-table thead th.oc-strike-col {
+  z-index: 8;
+}
+
 .oc-table td {
-  padding: 5px 8px;
+  height: 34px;
+  padding: 0 8px;
   text-align: right;
   border-bottom: 1px solid var(--ao-border-soft);
   color: var(--ao-base);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color .18s ease, box-shadow .18s ease, color .18s ease;
 }
 
 .oc-row:hover td { background: var(--ao-hover); }
@@ -72,8 +299,91 @@
 /* In-the-money shading (subtle), CALL side left / PUT side right. */
 .oc-itm { background: rgba(0, 143, 117, 0.06); }
 
+/* OI depth bars, adapted from the Enter Trade chain. */
+.oc-oi {
+  position: relative;
+  color: var(--ao-base);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.oc-oi-bar {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  z-index: 0;
+  min-width: 0;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.oc-call-oi {
+  text-align: right;
+}
+
+.oc-call-oi .oc-oi-bar {
+  right: 0;
+  background: rgba(63, 91, 217, .26);
+}
+
+.oc-put-oi {
+  text-align: left;
+}
+
+.oc-put-oi .oc-oi-bar {
+  left: 0;
+  background: rgba(249, 186, 77, .36);
+}
+
+.oc-oi-val {
+  position: relative;
+  z-index: 1;
+  padding: 0 4px;
+}
+
 .oc-ltp { font-weight: 700; color: var(--ao-bold); }
 .oc-ltp.oc-head { color: var(--ao-caption); }
+
+/* A live-streaming LTP cell (a WebSocket tick has arrived for this token):
+   green text + a brief flash so you can see prices ticking in real time. */
+.oc-ltp.oc-live { color: var(--ao-green); }
+.oc-ltp.oc-live::after {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--ao-green);
+  vertical-align: middle;
+  animation: oc-live-blink 1s ease-in-out infinite;
+}
+
+/* A Bid/Ask cell receiving live Upstox depth ticks: subtle live tint + dot. */
+.oc-bidask.oc-live { position: relative; }
+.oc-bidask.oc-live .oc-bid { color: var(--ao-green); font-weight: 600; }
+.oc-bidask.oc-live .oc-ask { color: var(--ao-red, #d14343); font-weight: 600; }
+.oc-bidask.oc-live::after {
+  content: '';
+  position: absolute;
+  top: 50%; right: 3px;
+  width: 4px; height: 4px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--ao-green);
+  animation: oc-live-blink 1s ease-in-out infinite;
+}
+
+/* The header "LIVE" chip pulse. */
+.oc-live-pulse { animation: oc-live-glow 1.4s ease-in-out infinite; }
+
+@keyframes oc-live-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@keyframes oc-live-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 143, 117, 0.45); }
+  50% { box-shadow: 0 0 0 4px rgba(0, 143, 117, 0); }
+}
 
 .oc-strike-cell {
   text-align: center;
@@ -82,7 +392,12 @@
   background: var(--ao-surface-2);
 }
 
-.oc-iv { color: var(--ao-caption); font-size: 0.75rem; }
+.oc-iv,
+.oc-greek {
+  color: var(--ao-caption);
+  font-size: 0.75rem;
+  text-align: right;
+}
 
 /* Bid/Ask cell — bid green, ask red, subtle separator. */
 .oc-bidask { font-size: 0.75rem; }
@@ -94,4 +409,22 @@
   text-align: center !important;
   color: var(--ao-caption);
   padding: 32px !important;
+}
+
+@media (max-width: 860px) {
+  .oc-page-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .oc-page-badges,
+  .oc-controls-status {
+    justify-content: flex-start;
+  }
+
+  .oc-controls-main,
+  .oc-controls-status {
+    flex-basis: 100%;
+  }
 }

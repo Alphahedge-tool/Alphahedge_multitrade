@@ -1,0 +1,102 @@
+// Nubra streaming messages — subset of nubrafrontend.proto covering only what
+// the market-data WebSocket (wss://api.nubra.io/apibatch/ws) actually sends.
+// Field names/numbers extracted from the official SDK's generated descriptor
+// (openalgo broker/nubra/protos/nubrafrontend_pb2.py).
+//
+// Wire shape: every frame is a google.protobuf.Any whose value is ANOTHER Any
+// whose type_url names one of the Batch* messages below. We declare our own
+// Any so protobufjs needs no external imports.
+syntax = "proto3";
+package nubra;
+
+message Any {
+  string type_url = 1;
+  bytes value = 2;
+}
+
+message WebSocketMsgIndex {
+  string indexname = 1;
+  int64 timestamp = 2;
+  int64 index_value = 3;      // paise (divide by 100)
+  int64 high_index_value = 4; // paise
+  int64 low_index_value = 5;  // paise
+  int64 volume = 6;
+  float changepercent = 7;
+  int64 tick_volume = 8;
+  int64 prev_close = 9;       // paise
+  string exchange = 10;
+  int64 volume_oi = 11;
+}
+
+message BatchWebSocketIndexMessage {
+  int64 timestamp = 1;
+  repeated WebSocketMsgIndex indexes = 2;
+  repeated WebSocketMsgIndex instruments = 3;
+}
+
+message OrderBookLevel {
+  int64 price = 1; // paise
+  int64 quantity = 2;
+  int64 orders = 3;
+}
+
+message WebSocketMsgOrderBook {
+  uint32 inst_id = 1;
+  int64 timestamp = 2;
+  repeated OrderBookLevel bids = 3;
+  repeated OrderBookLevel asks = 4;
+  int64 ltp = 5; // paise
+  int64 ltq = 6;
+  int64 volume = 7;
+  int64 ref_id = 8;
+}
+
+message BatchWebSocketOrderbookMessage {
+  int64 timestamp = 1;
+  repeated WebSocketMsgOrderBook instruments = 2;
+}
+
+message WebSocketMsgIndexBucket {
+  string indexname = 1;
+  string exchange = 2;
+  int32 interval = 3; // enum Interval in the full schema; varint either way
+  int64 timestamp = 4;
+  int64 open = 5;  // paise
+  int64 high = 6;  // paise
+  int64 low = 7;   // paise
+  int64 close = 8; // paise
+  int64 bucket_volume = 9;
+  int64 tick_volume = 10;
+  int64 cumulative_volume = 11;
+  int64 bucket_timestamp = 12;
+}
+
+message BatchWebSocketIndexBucketMessage {
+  int64 timestamp = 1;
+  repeated WebSocketMsgIndexBucket indexes = 2;
+  repeated WebSocketMsgIndexBucket instruments = 3;
+}
+
+message WebSocketMsgOptionChainItem {
+  int64 inst_id = 1;
+  int64 ts = 2;
+  int64 sp = 3;
+  int32 ls = 4;
+  int64 ltp = 5; // paise
+  float ltpchg = 6;
+  float iv = 7;
+  float delta = 8;
+  float gamma = 9;
+  float theta = 10;
+  float vega = 11;
+  int64 oi = 12;
+  int64 volume = 13;
+  int64 ref_id = 14;
+  int64 prev_oi = 15;
+  int64 price_pcp = 16;
+}
+
+message BatchWebSocketGreeksMessage {
+  int64 timestamp = 1;
+  repeated WebSocketMsgOptionChainItem instruments = 2;
+}

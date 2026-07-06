@@ -13,6 +13,7 @@
 import { route, readJSON, ApiError } from '../server.js';
 import * as nubra from '../brokers/nubra.js';
 import { saveTotpSecret, clearTotpSecret, isConfigured } from '../lib/supabase.js';
+import { setFeedAccount } from '../lib/feedRegistry.js';
 
 // The frontend sends creds inside {client}; some callers post the fields flat.
 // Accept both and normalize to the adapter's camelCase creds shape.
@@ -50,9 +51,23 @@ function buildLoginResponse(session, source) {
   };
 }
 
+// registerFeed records this account as the feed's Nubra source when the login
+// came from Feed Master (feedRegister); the registry change hook then starts
+// the Nubra market-data WebSocket automatically.
+function registerFeed(body, session) {
+  const c = body.client && typeof body.client === 'object' ? body.client : body;
+  if (!(body.feedRegister || c.feedRegister) || !session?.sessionToken) return;
+  setFeedAccount('nubra', {
+    session,
+    account: session.clientCode || '',
+    userName: body.userName || c.userName || '',
+  });
+}
+
 // POST /api/nubra/auto-login — headless login, self-healing.
 route('POST', '/api/nubra/auto-login', async (req) => {
-  const cr = credsFrom(await readJSON(req));
+  const body = await readJSON(req);
+  const cr = credsFrom(body);
 
   if (!cr.totpSecret) {
     // Not set up yet → begin enrollment (sends the SMS OTP).
@@ -63,6 +78,7 @@ route('POST', '/api/nubra/auto-login', async (req) => {
 
   try {
     const session = await nubra.login(cr);
+    registerFeed(body, session);
     return buildLoginResponse(session, 'totp-login');
   } catch (err) {
     if (!nubra.isTOTPError(err)) throw asApiError(err);
@@ -97,6 +113,7 @@ route('POST', '/api/nubra/totp/enable', async (req) => {
   const { totpSecret, session } = await nubra.finishSetup(cr, { tempToken, otp });
   await persistSecret(cr.id, totpSecret);
   const loginSession = await nubra.login({ ...cr, totpSecret });
+  registerFeed(body, loginSession);
   return { ...buildLoginResponse(loginSession, 'totp-setup'), totpSecret, totpEnabled: true };
 });
 
@@ -116,6 +133,7 @@ route('POST', '/api/nubra/totp/setup', async (req) => {
   const { totpSecret, session } = await nubra.finishSetup(cr, { tempToken, otp });
   await persistSecret(cr.id, totpSecret);
   const loginSession = await nubra.login({ ...cr, totpSecret });
+  registerFeed(body, loginSession);
   return { ...buildLoginResponse(loginSession, 'totp-setup'), totpSecret, totpEnabled: true };
 });
 

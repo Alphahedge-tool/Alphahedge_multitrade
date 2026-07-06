@@ -13,10 +13,31 @@
 // new account of the same broker replaces it.
 
 const feed = new Map(); // broker -> entry
+const changeListeners = new Set(); // cb(broker, entry|null) — e.g. ws feedManager auto-start
+
+// onFeedChange subscribes to registry changes; the ws feed manager uses this to
+// start/stop a broker's upstream WebSocket the moment Feed Master logs it in/out.
+export function onFeedChange(cb) {
+  changeListeners.add(cb);
+  return () => changeListeners.delete(cb);
+}
+
+function notify(broker, entry) {
+  for (const cb of changeListeners) {
+    try {
+      cb(broker, entry);
+    } catch {
+      /* listener errors must not break login */
+    }
+  }
+}
 
 export function setFeedAccount(broker, entry) {
   if (!broker || !entry) return;
-  feed.set(String(broker).toLowerCase(), { ...entry, at: Date.now() });
+  const key = String(broker).toLowerCase();
+  const stored = { ...entry, at: Date.now() };
+  feed.set(key, stored);
+  notify(key, stored);
 }
 
 export function getFeedAccount(broker) {
@@ -24,7 +45,8 @@ export function getFeedAccount(broker) {
 }
 
 export function clearFeedAccount(broker) {
-  feed.delete(String(broker).toLowerCase());
+  const key = String(broker).toLowerCase();
+  if (feed.delete(key)) notify(key, null);
 }
 
 // status summarizes the active feed accounts (safe fields only — no secrets).

@@ -20,6 +20,15 @@ export default defineConfig({
         changeOrigin: true,
         agent: keepAliveAgent,
       },
+      // The broker market-data WebSocket (/ws/feed) — ws:true makes Vite forward
+      // the HTTP Upgrade handshake to the backend. Without this the browser's
+      // /ws/feed socket hangs at "connecting…" because the dev server never
+      // upgrades it. No keep-alive agent here: a WS is a long-lived socket.
+      '/ws': {
+        target: 'ws://127.0.0.1:3001',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   build: {

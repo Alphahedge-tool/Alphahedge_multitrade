@@ -3,6 +3,7 @@
 
 import { route, readJSON, ApiError } from '../server.js';
 import * as kotak from '../brokers/kotak.js';
+import { setFeedAccount } from '../lib/feedRegistry.js';
 
 route('POST', '/api/kotak/auto-login', async (req) => {
   const b = await readJSON(req);
@@ -15,7 +16,17 @@ route('POST', '/api/kotak/auto-login', async (req) => {
     totpSecret: c.totpSecret,
   };
   try {
-    return await kotak.autoLogin(cr);
+    const res = await kotak.autoLogin(cr);
+    // Feed Master logins register this account as the feed's Kotak source; the
+    // registry change hook then starts the Kotak HSM WebSocket automatically.
+    if ((b.feedRegister || c.feedRegister) && res?.session?.tradeToken) {
+      setFeedAccount('kotak', {
+        session: res.session,
+        account: res.clientCode || cr.ucc,
+        userName: b.userName || c.userName || '',
+      });
+    }
+    return res;
   } catch (err) {
     if (err instanceof ApiError) throw err;
     throw new ApiError(err.message || 'Kotak login failed', err.status || 500);

@@ -1,22 +1,26 @@
-import { Box, Typography } from '@mui/material'
+import { Box, Chip, Typography } from '@mui/material'
 import OptionChain from './OptionChain'
 import './tradepanel.css'
 
-// Option Chain page — no account picker. The chain reads from the shared feed
-// (the Angel + Upstox accounts logged in via Feed Master). Just pick underlying
-// + expiry and load.
+// Fixed-height page shell: the header and controls stay visible, only the table scrolls.
 export default function OptionChainPage() {
   return (
-    <Box className="page-shell">
-      <Box sx={{ mb: 1.5 }}>
-        <Typography variant="h5">Option Chain</Typography>
-        <Typography color="text.secondary" fontSize="0.875rem">
-          Powered by the Feed Master — Angel LTP / OI enriched with Upstox Bid / Ask. No account selection needed here.
-        </Typography>
+    <Box className="oc-page">
+      <Box className="oc-page-head">
+        <Box className="oc-page-title">
+          <Box>
+            <Typography variant="h5">Option Chain</Typography>
+            <Typography color="text.secondary" fontSize="0.875rem">
+              Angel LTP / OI enriched with Upstox Bid / Ask from Feed Master.
+            </Typography>
+          </Box>
+          <Box className="oc-page-badges">
+            <Chip size="small" label="Live chain" />
+            <Chip size="small" variant="outlined" label="No account picker" />
+          </Box>
+        </Box>
       </Box>
-      <Box sx={{ flex: 1, minHeight: 0 }}>
-        <OptionChain />
-      </Box>
+      <OptionChain />
     </Box>
   )
 }

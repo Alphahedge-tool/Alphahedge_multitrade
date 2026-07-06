@@ -30,6 +30,7 @@ export default function Feedmaster() {
     return r
   })
   const [backendFeed, setBackendFeed] = useState({})
+  const [wsFeed, setWsFeed] = useState({ brokers: {}, clients: 0 })
   const [feedError, setFeedError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -47,6 +48,7 @@ export default function Feedmaster() {
       if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`)
       setBackendFeed(body.feed || {})
       setFeedError('')
+      loadWsFeed()
       return body.feed || {}
     } catch (e) {
       setBackendFeed({})
@@ -54,6 +56,17 @@ export default function Feedmaster() {
       if (!silent) setError(e.message || 'Failed to load backend feed status')
       return {}
     }
+  }
+
+  // Live broker WebSocket status (the openalgo-style /ws/feed adapters): each
+  // broker logged into the feed auto-starts its market-data socket; this shows
+  // connected/subscriptions per broker.
+  async function loadWsFeed() {
+    try {
+      const res = await fetch('/api/ws/feed/status')
+      const body = await res.json().catch(() => ({}))
+      if (res.ok && body.status) setWsFeed({ brokers: body.brokers || {}, clients: body.clients || 0 })
+    } catch { /* backend without ws feed: hide the section */ }
   }
 
   // Option Chain reads this same backend registry, so the Feed Master card must
@@ -168,6 +181,27 @@ export default function Feedmaster() {
             <Typography sx={{ fontSize: '0.82rem', color: 'text.secondary', py: 0.5 }}>
               Backend feed registry is empty. Log in Angel and Upstox here; Option Chain will show Bid/Ask only after Upstox appears here.
             </Typography>
+          )}
+          {Object.keys(wsFeed.brokers).length > 0 && (
+            <>
+              <Divider sx={{ my: 1.5 }} />
+              <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.03em', color: 'text.secondary', mb: 0.5 }}>
+                Broker WebSockets ({wsFeed.clients} client{wsFeed.clients === 1 ? '' : 's'} on /ws/feed)
+              </Typography>
+              {Object.entries(wsFeed.brokers).map(([broker, s]) => (
+                <Box key={broker} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.4 }}>
+                  <Chip size="small" variant="outlined" color={s.connected ? 'success' : 'default'} label={brokerLabel(broker)} />
+                  <Typography sx={{ fontSize: '0.82rem', minWidth: 120 }}>{s.account || s.feedAccount || '—'}</Typography>
+                  <Typography sx={{ fontSize: '0.78rem', color: 'text.secondary', flex: 1 }}>
+                    {s.connected ? `streaming · ${s.subscriptions || 0} subscription${(s.subscriptions || 0) === 1 ? '' : 's'}`
+                      : s.running ? (s.lastError || 'connecting…') : 'not started'}
+                  </Typography>
+                  {s.connected
+                    ? <Chip size="small" color="success" icon={<CheckCircle2 size={13} />} label="WS connected" />
+                    : <Chip size="small" color={s.running ? 'warning' : 'default'} label={s.running ? 'WS connecting' : 'WS off'} />}
+                </Box>
+              ))}
+            </>
           )}
           {feedError && <Alert severity="warning" sx={{ mt: 1 }}>{feedError}</Alert>}
           {hasRecentAttempts && (
