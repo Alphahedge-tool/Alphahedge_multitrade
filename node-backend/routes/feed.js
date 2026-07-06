@@ -3,7 +3,8 @@
 // accounts were logged in via Feed Master (tracked in the feed registry).
 //
 //   GET  /api/feed/status                 -> which broker accounts are live
-//   POST /api/feed/option-chain {symbol,expiry} -> merged chain (Angel LTP/OI + Upstox bid/ask)
+//   POST /api/feed/option-chain {symbol,expiry,fast?} -> chain; fast skips Upstox REST enrichment
+//   POST /api/feed/option-chain-extra {symbol,expiry,strikes} -> Upstox bid/ask/greeks only
 //   GET  /api/feed/expiries?symbol=        -> expiry list for the underlying
 
 import { route, readJSON, ApiError } from '../server.js';
@@ -49,17 +50,42 @@ route('POST', '/api/feed/option-chain', async (req) => {
   // 1) Angel chain (base ladder: strikes, LTP, OI, spot, atm).
   const chain = await getAngelChain(angelFeed.client, b.symbol, b.expiry);
 
+  if (b.fast || b.includeUpstox === false) {
+    return { status: true, ...chain, upstox: { source: 'deferred', aligned: null } };
+  }
+
   // 2) Upstox enrichment (bid/ask/greeks) — from the feed's Upstox account.
+  const upstox = await buildUpstoxExtra({
+    symbol: b.symbol,
+    expiry: chain.expiry || b.expiry,
+    strikes: chain.strikes || [],
+  });
+
+  return { status: true, ...chain, upstox };
+});
+
+route('POST', '/api/feed/option-chain-extra', async (req) => {
+  const b = await readJSON(req);
+  if (!b.symbol || !b.expiry) throw new ApiError('symbol and expiry required', 400);
+  const upstox = await buildUpstoxExtra({
+    symbol: b.symbol,
+    expiry: b.expiry,
+    strikes: Array.isArray(b.strikes) ? b.strikes : [],
+  });
+  return { status: true, ...upstox };
+});
+
+async function buildUpstoxExtra({ symbol, expiry, strikes }) {
   const upFeed = getFeedAccount('upstox');
   let upstox = { source: 'no-upstox-in-feed', aligned: null };
   if (upFeed?.userId) {
     const sess = getUpstoxSession(upFeed.userId);
-    if (sess?.accessToken && chain.strikes?.length) {
+    if (sess?.accessToken && strikes?.length) {
       const { byStrike, source, spot } = await fetchUpstoxChain({
-        symbol: b.symbol, expiryISO: toISODate(chain.expiry || b.expiry), accessToken: sess.accessToken,
+        symbol, expiryISO: toISODate(expiry), accessToken: sess.accessToken,
       });
       const A = { callBid: [], callAsk: [], callBidQty: [], callAskQty: [], callGreeks: [], putBid: [], putAsk: [], putBidQty: [], putAskQty: [], putGreeks: [] };
-      for (const strike of chain.strikes) {
+      for (const strike of strikes) {
         const u = byStrike[strike] || byStrike[Number(strike)] || {};
         const c = u.call || {}, p = u.put || {};
         A.callBid.push(c.bid ?? null); A.callAsk.push(c.ask ?? null); A.callBidQty.push(c.bidQty ?? null); A.callAskQty.push(c.askQty ?? null);
@@ -72,6 +98,5 @@ route('POST', '/api/feed/option-chain', async (req) => {
       upstox = { source: 'upstox-session-missing', aligned: null };
     }
   }
-
-  return { status: true, ...chain, upstox };
-});
+  return upstox;
+}

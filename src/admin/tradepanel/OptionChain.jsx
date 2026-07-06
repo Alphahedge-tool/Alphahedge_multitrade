@@ -14,6 +14,7 @@ export default function OptionChain() {
   const [chain, setChain] = useState(null)
   const [feed, setFeed] = useState({})       // which broker accounts are live (REST registry)
   const [loading, setLoading] = useState(false)
+  const [enriching, setEnriching] = useState(false)
   const [error, setError] = useState('')
 
   // Live WebSocket state: which broker's feed we subscribe through, connection
@@ -31,6 +32,7 @@ export default function OptionChain() {
   const strikeScrollRef = useRef(null)
   const syncingSideRef = useRef('')
   const scrollSyncRafRef = useRef(0)
+  const loadSeqRef = useRef(0)
   // Upstox token per strike-index (for live Bid/Ask), resolved from the master.
   const [upTokens, setUpTokens] = useState({ callTokens: [], putTokens: [] })
 
@@ -76,23 +78,54 @@ export default function OptionChain() {
 
   async function loadChain(sym = symbol, exp = expiry) {
     if (!exp) { setError('Select an expiry first'); return }
-    setLoading(true); setError('')
+    const seq = loadSeqRef.current + 1
+    loadSeqRef.current = seq
+    const emptyUpMap = { callTokens: [], putTokens: [] }
+    setLoading(true); setEnriching(false); setError(''); setUpTokens(emptyUpMap); setChain(null)
     try {
       const res = await fetch('/api/feed/option-chain', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: sym, expiry: exp }),
+        body: JSON.stringify({ symbol: sym, expiry: exp, fast: true }),
       })
       const body = await res.json()
+      if (seq !== loadSeqRef.current) return
       if (!res.ok || body.status === false) throw new Error(body.message || 'Chain load failed')
       setChain(body)
-      // Resolve the Upstox token per strike (for live Bid/Ask over the WS), then
-      // subscribe both feeds. MCX Bid/Ask can't come from the REST option-chain
-      // endpoint, so we stream it from Upstox's WebSocket instead.
-      const upMap = await fetchUpstoxTokens(body)
+      setLoading(false)
+      subscribeLive(body, emptyUpMap)
+      hydrateChain(body, seq)
+    } catch (e) {
+      if (seq === loadSeqRef.current) { setError(e.message); setChain(null); setLoading(false); setEnriching(false) }
+    }
+  }
+
+  async function hydrateChain(body, seq) {
+    setEnriching(true)
+    try {
+      const tokenPromise = fetchUpstoxTokens(body)
+      const extraPromise = fetch('/api/feed/option-chain-extra', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: body.symbol, expiry: body.expiry, strikes: body.strikes || [] }),
+      }).then((r) => r.json()).catch(() => null)
+
+      const upMap = await tokenPromise
+      if (seq !== loadSeqRef.current) return
       setUpTokens(upMap)
       subscribeLive(body, upMap)
-    } catch (e) { setError(e.message); setChain(null) }
-    finally { setLoading(false) }
+
+      const extra = await extraPromise
+      if (seq !== loadSeqRef.current) return
+      if (extra?.status !== false) {
+        setChain((prev) => {
+          if (!prev || prev.symbol !== body.symbol || prev.expiry !== body.expiry) return prev
+          return { ...prev, upstox: { source: extra.source, spot: extra.spot ?? null, aligned: extra.aligned || null } }
+        })
+      }
+    } catch {
+      /* Upstox hydration is best-effort; WebSocket ticks can still fill live fields. */
+    } finally {
+      if (seq === loadSeqRef.current) setEnriching(false)
+    }
   }
 
   // fetchUpstoxTokens maps the chain's canonical option symbols to Upstox
@@ -403,6 +436,7 @@ export default function OptionChain() {
             label={angelLive ? `Angel ${feed.angel.account}` : 'Angel not in feed'} />
           <Chip size="small" color={upstoxLive ? 'success' : 'default'} variant={upstoxLive ? 'filled' : 'outlined'}
             label={upstoxLive ? `Upstox ${feed.upstox.account}` : 'Upstox not in feed'} />
+          {enriching && <Chip size="small" variant="outlined" label="Hydrating Greeks" />}
           {chain && <Chip size="small" label={`Spot ${px(spotLtp)}`} variant="outlined" />}
           {chain && <Chip size="small" label={`ATM ${num(atm)}`} />}
         </Box>
@@ -432,10 +466,18 @@ export default function OptionChain() {
       {error && <Typography color="error" sx={{ mb: 0.5, fontSize: '0.75rem' }}>{error}</Typography>}
 
       <div className="oc-table-wrap">
-        {!chain && <div className="oc-empty">Select an underlying (index or MCX) and load the chain</div>}
+        {loading && !chain && (
+          <div className="oc-chain-skeleton">
+            <div className="oc-skel-side"><div className="oc-skel-head" />{Array.from({ length: 14 }).map((_, i) => <div key={i} className="oc-skel-row" />)}</div>
+            <div className="oc-skel-strike"><div className="oc-skel-head" />{Array.from({ length: 14 }).map((_, i) => <div key={i} className="oc-skel-row" />)}</div>
+            <div className="oc-skel-side"><div className="oc-skel-head" />{Array.from({ length: 14 }).map((_, i) => <div key={i} className="oc-skel-row" />)}</div>
+          </div>
+        )}
+        {!loading && !chain && <div className="oc-empty">Select an underlying (index or MCX) and load the chain</div>}
         {chain && (
           <div className="oc-split-grid">
             <div className="oc-side-scroll oc-call-scroll" ref={callScrollRef} onScroll={() => syncSideScroll('call')}>
+              <div className="oc-side-band oc-call-band">CALL</div>
               <table className="oc-table oc-side-table">
                 <colgroup>
                   <col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" />
@@ -495,6 +537,7 @@ export default function OptionChain() {
             </div>
 
             <div className="oc-side-scroll oc-put-scroll" ref={putScrollRef} onScroll={() => syncSideScroll('put')}>
+              <div className="oc-side-band oc-put-band">PUT</div>
               <table className="oc-table oc-side-table">
                 <colgroup>
                   <col className="oc-col-ltp" /><col className="oc-col-bidask" /><col className="oc-col-oi" />
