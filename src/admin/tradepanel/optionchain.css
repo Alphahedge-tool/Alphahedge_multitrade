@@ -225,10 +225,13 @@
   overflow-x: scroll;
   overflow-y: auto;
   background: var(--ao-surface);
+  scroll-behavior: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
+  overflow-anchor: none;
   contain: paint;
   will-change: scroll-position;
+  -webkit-overflow-scrolling: touch;
 }
 
 .oc-side-band {
@@ -371,6 +374,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   transition: background-color .18s ease, box-shadow .18s ease, color .18s ease;
+}
+
+.oc-side-scroll.oc-is-scrolling .oc-table td {
+  transition: none;
+}
+
+.oc-side-scroll.oc-is-scrolling .oc-ltp.oc-live::after,
+.oc-side-scroll.oc-is-scrolling .oc-bidask.oc-live::after {
+  animation: none;
+  opacity: 0.45;
 }
 
 .oc-row:hover td { background: var(--ao-hover); }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
 import { RefreshCw, Radio, Zap, ZapOff } from 'lucide-react'
 import './optionchain.css'
@@ -26,12 +26,16 @@ export default function OptionChain() {
   const [tickCount, setTickCount] = useState(0)
   const [lastTickAt, setLastTickAt] = useState(0)
   const wsRef = useRef(null)
+  const pendingTicksRef = useRef({})
+  const pendingTickCountRef = useRef(0)
+  const tickFlushRafRef = useRef(0)
   const subTokensRef = useRef([])                  // [{ broker, exchange, token }] currently subscribed
   const callScrollRef = useRef(null)
   const putScrollRef = useRef(null)
   const strikeScrollRef = useRef(null)
   const syncingSideRef = useRef('')
   const scrollSyncRafRef = useRef(0)
+  const scrollIdleTimerRef = useRef(0)
   const loadSeqRef = useRef(0)
   // Upstox token per strike-index (for live Bid/Ask), resolved from the master.
   const [upTokens, setUpTokens] = useState({ callTokens: [], putTokens: [] })
@@ -148,6 +152,34 @@ export default function OptionChain() {
   }
 
   // ── Live WebSocket overlay ──────────────────────────────────────────────────
+  function queueLiveTick(m) {
+    const key = `${m.broker}|${m.token}`
+    pendingTicksRef.current[key] = {
+      ltp: m.ltp,
+      oi: m.oi,
+      close: m.close,
+      bid: m.bid,
+      ask: m.ask,
+      bidQty: m.bidQty,
+      askQty: m.askQty,
+      iv: m.iv,
+      greeks: m.greeks,
+      ts: m.ts,
+    }
+    pendingTickCountRef.current += 1
+    if (tickFlushRafRef.current) return
+    tickFlushRafRef.current = requestAnimationFrame(() => {
+      const patch = pendingTicksRef.current
+      const count = pendingTickCountRef.current
+      pendingTicksRef.current = {}
+      pendingTickCountRef.current = 0
+      tickFlushRafRef.current = 0
+      setTicks((prev) => ({ ...prev, ...patch }))
+      setTickCount((c) => c + count)
+      setLastTickAt(Date.now())
+    })
+  }
+
   // Connect once; the socket stays open and we (un)subscribe as chains change.
   function ensureSocket() {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -176,14 +208,7 @@ export default function OptionChain() {
       let m
       try { m = JSON.parse(ev.data) } catch { return }
       if (m.type !== 'tick') return
-      // Key by broker+token: Angel ticks carry LTP/OI, Upstox ticks carry Bid/Ask.
-      const key = `${m.broker}|${m.token}`
-      setTicks((prev) => ({
-        ...prev,
-        [key]: { ltp: m.ltp, oi: m.oi, close: m.close, bid: m.bid, ask: m.ask, bidQty: m.bidQty, askQty: m.askQty, iv: m.iv, greeks: m.greeks, ts: m.ts },
-      }))
-      setTickCount((c) => c + 1)
-      setLastTickAt(Date.now())
+      queueLiveTick(m)
     }
     return ws
   }
@@ -233,6 +258,10 @@ export default function OptionChain() {
       }
     }
     subTokensRef.current = instruments
+    pendingTicksRef.current = {}
+    pendingTickCountRef.current = 0
+    if (tickFlushRafRef.current) cancelAnimationFrame(tickFlushRafRef.current)
+    tickFlushRafRef.current = 0
     setTicks({}); setTickCount(0); setLastTickAt(0)
     // Subscribe each broker's instruments in one frame per broker.
     for (const broker of new Set(instruments.map((i) => i.broker))) {
@@ -257,7 +286,10 @@ export default function OptionChain() {
   }, [wsBroker, wsRunningKey, chain, upTokens])
 
   // Tear down the socket on unmount.
-  useEffect(() => () => { try { wsRef.current?.close() } catch { /* ignore */ } }, [])
+  useEffect(() => () => {
+    if (tickFlushRafRef.current) cancelAnimationFrame(tickFlushRafRef.current)
+    try { wsRef.current?.close() } catch { /* ignore */ }
+  }, [])
 
   // Freshness: a tick within the last 3s means the feed is genuinely live.
   const [, forceTick] = useState(0)
@@ -281,6 +313,7 @@ export default function OptionChain() {
     return running.length ? running : ['angel', 'upstox', 'kotak', 'nubra']
   }, [wsBrokers])
   const wsBrokerInfo = wsBrokers[wsBroker]
+  const feedHintIsWarning = !wsBrokerInfo?.running || (wsState === 'open' && wsBrokerInfo && !wsBrokerInfo.connected)
 
   // Per-strike live ticks from each broker. Angel ticks are keyed by Angel's
   // option token; Upstox ticks by its instrument key (both aligned to the chain's
@@ -294,26 +327,61 @@ export default function OptionChain() {
     return token != null ? ticks[`upstox|${token}`] : null
   }
 
-  const syncSideScroll = (side) => {
+  const markScrollActive = useCallback(() => {
+    const panes = [callScrollRef.current, putScrollRef.current, strikeScrollRef.current]
+    panes.forEach((pane) => pane?.classList.add('oc-is-scrolling'))
+    if (scrollIdleTimerRef.current) clearTimeout(scrollIdleTimerRef.current)
+    scrollIdleTimerRef.current = window.setTimeout(() => {
+      panes.forEach((pane) => pane?.classList.remove('oc-is-scrolling'))
+      scrollIdleTimerRef.current = 0
+    }, 140)
+  }, [])
+
+  const syncSideScroll = useCallback((side) => {
+    markScrollActive()
     const source = side === 'call' ? callScrollRef.current : putScrollRef.current
     const target = side === 'call' ? putScrollRef.current : callScrollRef.current
     const strike = strikeScrollRef.current
     if (!source || !target || syncingSideRef.current) return
-    syncingSideRef.current = side
-    if (scrollSyncRafRef.current) cancelAnimationFrame(scrollSyncRafRef.current)
+    if (scrollSyncRafRef.current) return
     scrollSyncRafRef.current = requestAnimationFrame(() => {
       const sourceMax = Math.max(1, source.scrollWidth - source.clientWidth)
       const targetMax = Math.max(0, target.scrollWidth - target.clientWidth)
       const progress = side === 'call' ? 1 - (source.scrollLeft / sourceMax) : source.scrollLeft / sourceMax
-      target.scrollLeft = side === 'call' ? progress * targetMax : (1 - progress) * targetMax
-      target.scrollTop = source.scrollTop
-      if (strike) strike.scrollTop = source.scrollTop
+      const nextLeft = side === 'call' ? progress * targetMax : (1 - progress) * targetMax
+
+      syncingSideRef.current = side
+      if (Math.abs(target.scrollLeft - nextLeft) > 0.5) target.scrollLeft = nextLeft
+      if (Math.abs(target.scrollTop - source.scrollTop) > 0.5) target.scrollTop = source.scrollTop
+      if (strike && Math.abs(strike.scrollTop - source.scrollTop) > 0.5) strike.scrollTop = source.scrollTop
+      scrollSyncRafRef.current = 0
       requestAnimationFrame(() => {
         syncingSideRef.current = ''
-        scrollSyncRafRef.current = 0
       })
     })
-  }
+  }, [markScrollActive])
+
+  useEffect(() => {
+    if (!chain) return undefined
+    const call = callScrollRef.current
+    const put = putScrollRef.current
+    if (!call || !put) return undefined
+    const onCallScroll = () => syncSideScroll('call')
+    const onPutScroll = () => syncSideScroll('put')
+    call.addEventListener('scroll', onCallScroll, { passive: true })
+    put.addEventListener('scroll', onPutScroll, { passive: true })
+    return () => {
+      call.removeEventListener('scroll', onCallScroll)
+      put.removeEventListener('scroll', onPutScroll)
+      if (scrollSyncRafRef.current) cancelAnimationFrame(scrollSyncRafRef.current)
+      if (scrollIdleTimerRef.current) clearTimeout(scrollIdleTimerRef.current)
+      scrollSyncRafRef.current = 0
+      syncingSideRef.current = ''
+      call.classList.remove('oc-is-scrolling')
+      put.classList.remove('oc-is-scrolling')
+      strikeScrollRef.current?.classList.remove('oc-is-scrolling')
+    }
+  }, [chain, syncSideScroll])
 
   useEffect(() => {
     if (!chain) return
@@ -444,18 +512,22 @@ export default function OptionChain() {
 
       {/* Live-feed hint line: distinguishes socket / adapter / ticks so a quiet
           broker is never mistaken for a disconnected one. */}
-      <Typography sx={{ mb: 0.5, fontSize: '0.72rem', lineHeight: 1.3, color: liveStreaming ? 'var(--ao-green)' : 'var(--ao-gold)' }}>
+      <Typography sx={{ mb: 0.5, fontSize: '0.72rem', lineHeight: 1.3, color: liveStreaming ? 'var(--ao-green)' : feedHintIsWarning ? 'var(--ao-gold)' : 'var(--ao-caption)' }}>
         {!wsBrokerInfo?.running
           ? `${wsBroker} WebSocket isn't running — log it into Feed Master to go live.`
           : wsState !== 'open'
             ? `Connecting the browser to the feed…`
             : !wsBrokerInfo?.connected
               ? `${wsBroker}'s upstream WebSocket is down on the backend (${wsBrokerInfo.lastError || 'reconnecting'}).`
+              : loading
+                ? `Loading ${symbol} ${expiry || ''} chain.`
               : !chain
                 ? `${wsBroker} connected — Load a chain to start streaming prices.`
+                : enriching
+                  ? `${wsBroker} connected — enriching Bid/Ask and Greeks from Feed Master.`
                 : liveStreaming
                   ? `WebSocket LIVE on ${wsBroker} — ${tickCount} ticks, last ${secsSinceTick}s ago · ${wsBrokerInfo.subscriptions || 0} subs.`
-                  : `${wsBroker} connected (${wsBrokerInfo.subscriptions || 0} subs) but no ticks in ${secsSinceTick ?? '—'}s — that strike range may just be quiet right now; prices update when a trade prints. Bid/Ask still streams from Upstox.`}
+                  : `${wsBroker} connected (${wsBrokerInfo.subscriptions || 0} subs). Waiting for the next live tick; the loaded chain data remains visible.`}
       </Typography>
 
       {!angelLive && (
@@ -476,7 +548,7 @@ export default function OptionChain() {
         {!loading && !chain && <div className="oc-empty">Select an underlying (index or MCX) and load the chain</div>}
         {chain && (
           <div className="oc-split-grid">
-            <div className="oc-side-scroll oc-call-scroll" ref={callScrollRef} onScroll={() => syncSideScroll('call')}>
+            <div className="oc-side-scroll oc-call-scroll" ref={callScrollRef}>
               <div className="oc-side-band oc-call-band">CALL</div>
               <table className="oc-table oc-side-table">
                 <colgroup>
@@ -536,7 +608,7 @@ export default function OptionChain() {
               </table>
             </div>
 
-            <div className="oc-side-scroll oc-put-scroll" ref={putScrollRef} onScroll={() => syncSideScroll('put')}>
+            <div className="oc-side-scroll oc-put-scroll" ref={putScrollRef}>
               <div className="oc-side-band oc-put-band">PUT</div>
               <table className="oc-table oc-side-table">
                 <colgroup>
