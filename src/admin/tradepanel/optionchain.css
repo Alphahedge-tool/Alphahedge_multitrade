@@ -70,6 +70,13 @@
 }
 
 .oc-panel {
+  --oc-strike-col-w: 116px;
+  --oc-greek-col-w: 104px;
+  --oc-oi-col-w: 132px;
+  --oc-bidask-col-w: 148px;
+  --oc-ltp-col-w: 120px;
+  --oc-side-table-min-w: calc((var(--oc-greek-col-w) * 5) + var(--oc-oi-col-w) + var(--oc-bidask-col-w) + var(--oc-ltp-col-w));
+  --oc-full-table-min-w: calc((var(--oc-side-table-min-w) * 2) + var(--oc-strike-col-w));
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -159,7 +166,7 @@
 
 .oc-chain-skeleton {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 116px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--oc-strike-col-w) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   background: var(--ao-surface);
@@ -210,7 +217,7 @@
 
 .oc-split-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 116px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--oc-strike-col-w) minmax(0, 1fr);
   align-items: start;
   height: 100%;
   min-width: 0;
@@ -226,12 +233,27 @@
   overflow-y: auto;
   background: var(--ao-surface);
   scroll-behavior: auto;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: stable both-edges;
   overscroll-behavior: contain;
   overflow-anchor: none;
   contain: paint;
   will-change: scroll-position;
   -webkit-overflow-scrolling: touch;
+}
+
+.oc-side-scroll::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+.oc-side-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid var(--ao-surface);
+  background: rgba(136, 149, 171, .55);
+}
+
+.oc-side-scroll::-webkit-scrollbar-track {
+  background: rgba(231, 235, 245, .75);
 }
 
 .oc-side-band {
@@ -273,8 +295,8 @@
 
 .oc-strike-pane {
   z-index: 8;
-  width: 116px;
-  min-width: 116px;
+  width: var(--oc-strike-col-w);
+  min-width: var(--oc-strike-col-w);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -286,8 +308,8 @@
 }
 
 .oc-table {
-  width: 2240px;
-  min-width: 2240px;
+  width: var(--oc-full-table-min-w);
+  min-width: var(--oc-full-table-min-w);
   /* separate (not collapse) so sticky header cells keep their background and
      borders don't bleed through while scrolling under them. */
   border-collapse: separate;
@@ -297,21 +319,21 @@
 }
 
 .oc-side-table {
-  width: 936px;
-  min-width: 936px;
+  width: max(100%, var(--oc-side-table-min-w));
+  min-width: var(--oc-side-table-min-w);
 }
 
 .oc-strike-table {
-  width: 116px;
-  min-width: 116px;
+  width: var(--oc-strike-col-w);
+  min-width: var(--oc-strike-col-w);
 }
 
-.oc-table .oc-col-oi { width: 132px; }
-.oc-table .oc-col-bidask { width: 145px; }
-.oc-table .oc-col-ltp { width: 118px; }
+.oc-table .oc-col-oi { width: var(--oc-oi-col-w); }
+.oc-table .oc-col-bidask { width: var(--oc-bidask-col-w); }
+.oc-table .oc-col-ltp { width: var(--oc-ltp-col-w); }
 .oc-table .oc-col-iv,
-.oc-table .oc-col-greek { width: 108px; }
-.oc-table .oc-col-strike { width: 116px; }
+.oc-table .oc-col-greek { width: var(--oc-greek-col-w); }
+.oc-table .oc-col-strike { width: var(--oc-strike-col-w); }
 
 /* Sticky header. Chrome only sticks table headers reliably when the sticky
    declaration is on the CELLS (th) — thead/tr sticky is inconsistent — AND each
@@ -320,6 +342,7 @@
 .oc-table thead th {
   position: sticky;
   z-index: 2;
+  box-sizing: border-box;
   background: var(--ao-surface-2);
   color: var(--ao-caption);
   font-weight: 700;
@@ -330,6 +353,8 @@
   text-align: right;
   border-bottom: 1px solid var(--ao-border-soft);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
 }
 
 /* Row 1 (CALL|STRIKE|PUT band) pins to the very top; row 2 (column labels) pins
@@ -338,7 +363,7 @@
 .oc-table thead tr.oc-col-head th {
   top: 28px;
   z-index: 3;
-  text-align: center;
+  text-align: right;
 }
 
 .oc-side-head th { text-align: center; padding: 6px; }
@@ -361,9 +386,11 @@
 .oc-table thead th.oc-strike-col {
   z-index: 11;
   background: var(--ao-surface-2);
+  text-align: center;
 }
 
 .oc-table td {
+  box-sizing: border-box;
   height: 34px;
   padding: 0 8px;
   text-align: right;
@@ -376,6 +403,16 @@
   transition: background-color .18s ease, box-shadow .18s ease, color .18s ease;
 }
 
+.oc-call-scroll .oc-side-table th:last-child,
+.oc-call-scroll .oc-side-table td:last-child,
+.oc-put-scroll .oc-side-table th:last-child,
+.oc-put-scroll .oc-side-table td:last-child {
+  padding-right: 16px;
+}
+
+/* While a pane is actively scrolling, strip everything that forces per-frame
+   repaints: the cell colour transition, the live-dot blink animation, and the
+   hover highlight (which otherwise re-tints rows sliding under the cursor). */
 .oc-side-scroll.oc-is-scrolling .oc-table td {
   transition: none;
 }
@@ -384,6 +421,17 @@
 .oc-side-scroll.oc-is-scrolling .oc-bidask.oc-live::after {
   animation: none;
   opacity: 0.45;
+}
+
+.oc-side-scroll.oc-is-scrolling .oc-table tbody {
+  pointer-events: none;
+}
+
+/* Each row is self-contained: its paint can't affect anything outside it, so
+   the compositor can reuse cached row textures instead of repainting the whole
+   table strip while scrolling horizontally. */
+.oc-row {
+  contain: layout paint;
 }
 
 .oc-row:hover td { background: var(--ao-hover); }
@@ -403,6 +451,7 @@
   color: var(--ao-base);
   font-size: 0.75rem;
   font-weight: 700;
+  isolation: isolate;
 }
 
 .oc-oi-bar {
@@ -444,15 +493,19 @@
 
 /* A live-streaming LTP cell (a WebSocket tick has arrived for this token):
    green text + a brief flash so you can see prices ticking in real time. */
-.oc-ltp.oc-live { color: var(--ao-green); }
+.oc-ltp.oc-live {
+  position: relative;
+  color: var(--ao-green);
+  padding-right: 14px;
+}
 .oc-ltp.oc-live::after {
   content: '';
-  display: inline-block;
+  position: absolute;
   width: 5px; height: 5px;
-  margin-left: 5px;
+  top: 50%; right: 5px;
+  margin-top: -2.5px;
   border-radius: 50%;
   background: var(--ao-green);
-  vertical-align: middle;
   animation: oc-live-blink 1s ease-in-out infinite;
 }
 
@@ -498,7 +551,14 @@
 }
 
 /* Bid/Ask cell — bid green, ask red, subtle separator. */
-.oc-bidask { font-size: 0.75rem; }
+.oc-bidask {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.oc-bidask.oc-live {
+  padding-right: 14px;
+}
 .oc-bid { color: var(--ao-green); font-weight: 600; }
 .oc-ask { color: var(--ao-red); font-weight: 600; }
 .oc-sep { color: var(--ao-placeholder); margin: 0 3px; }
