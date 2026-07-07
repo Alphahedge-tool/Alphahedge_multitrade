@@ -86,6 +86,7 @@ if exist "go-backend\go.mod" (
 if not exist ".env" (
   echo.
   echo No .env file found. Enter local Supabase values for this PC.
+  echo These values are written only to this machine's .env file, not to Git.
   echo Leave blank only if you want to configure .env manually later.
   set /p "SUPABASE_URL_VALUE=SUPABASE_URL: "
   set /p "SUPABASE_SERVICE_KEY_VALUE=SUPABASE_SERVICE_KEY: "
