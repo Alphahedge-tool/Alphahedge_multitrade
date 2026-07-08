@@ -8,7 +8,7 @@ import EnterTrade from '../tradepanel/EnterTrade'
 // route changes (hidden, not unmounted) once visited, so its live websocket feed
 // and loaded option chain survive navigating away and back — the same keepalive
 // pattern as the Admin_project.
-function AdminLayout({ admin }) {
+function AdminLayout({ admin, themeMode, onToggleTheme }) {
   const location = useLocation()
   const isEnterTradeRoute = location.pathname === '/admin/trade-panel/enter-trade'
   const [keepEnterTrade, setKeepEnterTrade] = useState(isEnterTradeRoute)
@@ -19,7 +19,7 @@ function AdminLayout({ admin }) {
 
   return (
     <div className="app-shell">
-      <AdminTopbar admin={admin} />
+      <AdminTopbar admin={admin} themeMode={themeMode} onToggleTheme={onToggleTheme} />
       <div className="app-body">
         <AdminSidebar />
         <main className="app-main">

@@ -1,18 +1,155 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
 import { RefreshCw, Radio, Zap, ZapOff } from 'lucide-react'
 import './optionchain.css'
 
-const num = (v) => (v == null ? '—' : Number(v).toLocaleString('en-IN'))
-const px = (v) => (v == null ? '—' : Number(v).toFixed(2))
-const greek = (v, digits = 2) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(digits))
+const DASH = '-'
+const ROW_HEIGHT = 34
+const VIRTUAL_ROW_THRESHOLD = 160
+const VIRTUAL_OVERSCAN = 8
+const inrFormatter = new Intl.NumberFormat('en-IN')
+const num = (v) => (v == null ? DASH : inrFormatter.format(Number(v)))
+const px = (v) => (v == null ? DASH : Number(v).toFixed(2))
+const greek = (v, digits = 2) => (v == null || Number.isNaN(Number(v)) ? DASH : Number(v).toFixed(digits))
+const tickKey = (broker, token) => (token != null && token !== '' ? `${broker}|${token}` : '')
+const oiWidth = (oi, maxOi) => (maxOi ? Math.min(100, Math.round(((Number(oi) || 0) / maxOi) * 100)) : 0)
+
+function createLiveTickStore() {
+  const ticks = new Map()
+  const versions = new Map()
+  const listeners = new Map()
+  const metaListeners = new Set()
+  let meta = { tickCount: 0, lastTickAt: 0, version: 0 }
+
+  const notifyKey = (key) => {
+    const set = listeners.get(key)
+    if (!set) return
+    set.forEach((listener) => listener())
+  }
+
+  return {
+    setBatch(patch, count) {
+      const changed = []
+      Object.entries(patch).forEach(([key, tick]) => {
+        ticks.set(key, tick)
+        versions.set(key, (versions.get(key) || 0) + 1)
+        changed.push(key)
+      })
+      meta = { tickCount: meta.tickCount + count, lastTickAt: Date.now(), version: meta.version + 1 }
+      changed.forEach(notifyKey)
+      metaListeners.forEach((listener) => listener())
+    },
+    reset() {
+      const changed = Array.from(ticks.keys())
+      ticks.clear()
+      versions.clear()
+      meta = { tickCount: 0, lastTickAt: 0, version: meta.version + 1 }
+      changed.forEach(notifyKey)
+      metaListeners.forEach((listener) => listener())
+    },
+    getTick(key) {
+      return key ? ticks.get(key) || null : null
+    },
+    getVersion(keys) {
+      return keys.map((key) => (key ? versions.get(key) || 0 : 0)).join('|')
+    },
+    getMeta() {
+      return meta
+    },
+    subscribeKeys(keys, listener) {
+      const activeKeys = [...new Set(keys.filter(Boolean))]
+      activeKeys.forEach((key) => {
+        if (!listeners.has(key)) listeners.set(key, new Set())
+        listeners.get(key).add(listener)
+      })
+      return () => {
+        activeKeys.forEach((key) => {
+          const set = listeners.get(key)
+          if (!set) return
+          set.delete(listener)
+          if (!set.size) listeners.delete(key)
+        })
+      }
+    },
+    subscribeMeta(listener) {
+      metaListeners.add(listener)
+      return () => metaListeners.delete(listener)
+    },
+  }
+}
+
+const liveTickStore = createLiveTickStore()
+
+function useLiveTicks(keys) {
+  const keySig = keys.join('|')
+  const stableKeys = useMemo(() => keys, [keySig])
+  useSyncExternalStore(
+    useCallback((listener) => liveTickStore.subscribeKeys(stableKeys, listener), [stableKeys]),
+    useCallback(() => liveTickStore.getVersion(stableKeys), [stableKeys]),
+    () => ''
+  )
+  return stableKeys.map((key) => liveTickStore.getTick(key))
+}
+
+function useLiveMeta() {
+  const [, refresh] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => refresh((n) => n + 1), 500)
+    return () => clearInterval(timer)
+  }, [])
+  return liveTickStore.getMeta()
+}
+
+function liveLtpFromTicks(angelTick, upTick, preferredBroker, restLtp) {
+  const first = preferredBroker === 'upstox' ? [upTick, angelTick] : [angelTick, upTick]
+  for (const tick of first) if (tick?.ltp != null) return tick.ltp
+  return restLtp
+}
+
+function liveOiFromTicks(angelTick, upTick, restOi) {
+  if (angelTick?.oi != null) return angelTick.oi
+  if (upTick?.oi != null) return upTick.oi
+  return restOi
+}
+
+function liveBidFromTicks(angelTick, upTick, restBid) {
+  if (upTick?.bid != null) return upTick.bid
+  if (angelTick?.bid != null) return angelTick.bid
+  return restBid
+}
+
+function liveAskFromTicks(angelTick, upTick, restAsk) {
+  if (upTick?.ask != null) return upTick.ask
+  if (angelTick?.ask != null) return angelTick.ask
+  return restAsk
+}
+
+function liveGreekFromTicks(upTick, field, restVal) {
+  if (field === 'iv' && upTick?.iv != null) return upTick.iv
+  if (upTick?.greeks?.[field] != null) return upTick.greeks[field]
+  return restVal
+}
 
 // One CALL-side row. Memoized so a WebSocket tick only re-renders the strikes
 // whose values actually changed — not the whole table — keeping horizontal
 // scroll smooth while prices stream in.
 const CallRow = memo(function CallRow({
-  strike, isAtm, itm, iv, delta, gamma, theta, vega, oi, oiWidth, bid, ask, baLive, ltp, live,
+  strike, isAtm, itm, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
+  const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
+  const ltp = liveLtpFromTicks(angelTick, upTick, wsBroker, restLtp)
+  const oi = Number(liveOiFromTicks(angelTick, upTick, restOi) ?? 0)
+  const bid = liveBidFromTicks(angelTick, upTick, restBid)
+  const ask = liveAskFromTicks(angelTick, upTick, restAsk)
+  const iv = liveGreekFromTicks(upTick, 'iv', restIv)
+  const delta = liveGreekFromTicks(upTick, 'delta', restDelta)
+  const gamma = liveGreekFromTicks(upTick, 'gamma', restGamma)
+  const theta = liveGreekFromTicks(upTick, 'theta', restTheta)
+  const vega = liveGreekFromTicks(upTick, 'vega', restVega)
+  const ltpLive = angelTick?.ltp != null || upTick?.ltp != null
+  const baLive = angelTick?.bid != null || upTick?.bid != null
+
   return (
     <tr className={`oc-row${isAtm ? ' oc-atm' : ''}`}>
       <td className="oc-greek">{greek(iv, 1)}</td>
@@ -20,22 +157,36 @@ const CallRow = memo(function CallRow({
       <td className="oc-greek">{greek(gamma, 4)}</td>
       <td className="oc-greek">{greek(theta, 2)}</td>
       <td className="oc-greek">{greek(vega, 2)}</td>
-      <td className={`oc-oi oc-call-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
+      <td className={`oc-oi oc-call-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth(oi, maxOi)}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
       <td className={`oc-bidask${baLive ? ' oc-live' : ''}`}><span className="oc-bid">{px(bid)}</span><span className="oc-sep">/</span><span className="oc-ask">{px(ask)}</span></td>
-      <td className={`oc-ltp${itm ? ' oc-itm' : ''}${live ? ' oc-live' : ''}`}>{px(ltp)}</td>
+      <td className={`oc-ltp${itm ? ' oc-itm' : ''}${ltpLive ? ' oc-live' : ''}`}>{px(ltp)}</td>
     </tr>
   )
 })
 
 // One PUT-side row (mirror column order), memoized for the same reason.
 const PutRow = memo(function PutRow({
-  strike, isAtm, itm, iv, delta, gamma, theta, vega, oi, oiWidth, bid, ask, baLive, ltp, live,
+  strike, isAtm, itm, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
+  const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
+  const ltp = liveLtpFromTicks(angelTick, upTick, wsBroker, restLtp)
+  const oi = Number(liveOiFromTicks(angelTick, upTick, restOi) ?? 0)
+  const bid = liveBidFromTicks(angelTick, upTick, restBid)
+  const ask = liveAskFromTicks(angelTick, upTick, restAsk)
+  const iv = liveGreekFromTicks(upTick, 'iv', restIv)
+  const delta = liveGreekFromTicks(upTick, 'delta', restDelta)
+  const gamma = liveGreekFromTicks(upTick, 'gamma', restGamma)
+  const theta = liveGreekFromTicks(upTick, 'theta', restTheta)
+  const vega = liveGreekFromTicks(upTick, 'vega', restVega)
+  const ltpLive = angelTick?.ltp != null || upTick?.ltp != null
+  const baLive = angelTick?.bid != null || upTick?.bid != null
+
   return (
     <tr className={`oc-row${isAtm ? ' oc-atm' : ''}`}>
-      <td className={`oc-ltp${itm ? ' oc-itm' : ''}${live ? ' oc-live' : ''}`}>{px(ltp)}</td>
+      <td className={`oc-ltp${itm ? ' oc-itm' : ''}${ltpLive ? ' oc-live' : ''}`}>{px(ltp)}</td>
       <td className={`oc-bidask${baLive ? ' oc-live' : ''}`}><span className="oc-bid">{px(bid)}</span><span className="oc-sep">/</span><span className="oc-ask">{px(ask)}</span></td>
-      <td className={`oc-oi oc-put-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
+      <td className={`oc-oi oc-put-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth(oi, maxOi)}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
       <td className="oc-greek">{greek(iv, 1)}</td>
       <td className="oc-greek">{greek(delta, 3)}</td>
       <td className="oc-greek">{greek(gamma, 4)}</td>
@@ -73,13 +224,7 @@ export default function OptionChain() {
   const [wsBroker, setWsBroker] = useState('angel')
   const [wsBrokers, setWsBrokers] = useState({})   // /api/ws/feed/status brokers
   const [wsState, setWsState] = useState('idle')   // idle | connecting | open | closed
-  const [ticks, setTicks] = useState({})           // "broker|token" -> { ltp, oi, bid, ask, ts }
-  const [tickCount, setTickCount] = useState(0)
-  const [lastTickAt, setLastTickAt] = useState(0)
   const wsRef = useRef(null)
-  const pendingTicksRef = useRef({})
-  const pendingTickCountRef = useRef(0)
-  const tickFlushRafRef = useRef(0)
   const subTokensRef = useRef([])                  // [{ broker, exchange, token }] currently subscribed
   const callScrollRef = useRef(null)
   const putScrollRef = useRef(null)
@@ -87,12 +232,14 @@ export default function OptionChain() {
   const syncingSideRef = useRef('')
   const scrollIdleTimerRef = useRef(0)
   const loadSeqRef = useRef(0)
+  const visibleRafRef = useRef(0)
   // Cached scroll extents (scrollWidth - clientWidth) for each pane. Reading
   // scrollWidth/clientWidth forces a synchronous layout flush; the table never
   // resizes mid-scroll, so we measure once (on load / resize) and reuse.
   const scrollMaxRef = useRef({ call: 1, put: 1 })
   // Upstox token per strike-index (for live Bid/Ask), resolved from the master.
   const [upTokens, setUpTokens] = useState({ callTokens: [], putTokens: [] })
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 })
 
   // Index underlyings + MCX commodities. MCX names must match the Angel scrip
   // master (see node-backend/angel/scripoptions.js MCX_SYMBOLS).
@@ -208,33 +355,21 @@ export default function OptionChain() {
   // ── Live WebSocket overlay ──────────────────────────────────────────────────
   function queueLiveTick(m) {
     const key = `${m.broker}|${m.token}`
-    pendingTicksRef.current[key] = {
-      ltp: m.ltp,
-      oi: m.oi,
-      close: m.close,
-      bid: m.bid,
-      ask: m.ask,
-      bidQty: m.bidQty,
-      askQty: m.askQty,
-      iv: m.iv,
-      greeks: m.greeks,
-      ts: m.ts,
-    }
-    pendingTickCountRef.current += 1
-    if (tickFlushRafRef.current) return
-    tickFlushRafRef.current = requestAnimationFrame(() => {
-      const patch = pendingTicksRef.current
-      const count = pendingTickCountRef.current
-      pendingTicksRef.current = {}
-      pendingTickCountRef.current = 0
-      tickFlushRafRef.current = 0
-      setTicks((prev) => ({ ...prev, ...patch }))
-      setTickCount((c) => c + count)
-      setLastTickAt(Date.now())
-    })
+    liveTickStore.setBatch({
+      [key]: {
+        ltp: m.ltp,
+        oi: m.oi,
+        close: m.close,
+        bid: m.bid,
+        ask: m.ask,
+        bidQty: m.bidQty,
+        askQty: m.askQty,
+        iv: m.iv,
+        greeks: m.greeks,
+        ts: m.ts,
+      },
+    }, 1)
   }
-
-  // Connect once; the socket stays open and we (un)subscribe as chains change.
   function ensureSocket() {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return wsRef.current
@@ -312,11 +447,7 @@ export default function OptionChain() {
       }
     }
     subTokensRef.current = instruments
-    pendingTicksRef.current = {}
-    pendingTickCountRef.current = 0
-    if (tickFlushRafRef.current) cancelAnimationFrame(tickFlushRafRef.current)
-    tickFlushRafRef.current = 0
-    setTicks({}); setTickCount(0); setLastTickAt(0)
+    liveTickStore.reset()
     // Subscribe each broker's instruments in one frame per broker.
     for (const broker of new Set(instruments.map((i) => i.broker))) {
       sendSubscribe(ws, broker, instruments.filter((i) => i.broker === broker))
@@ -341,13 +472,12 @@ export default function OptionChain() {
 
   // Tear down the socket on unmount.
   useEffect(() => () => {
-    if (tickFlushRafRef.current) cancelAnimationFrame(tickFlushRafRef.current)
+    if (visibleRafRef.current) cancelAnimationFrame(visibleRafRef.current)
     try { wsRef.current?.close() } catch { /* ignore */ }
   }, [])
 
   // Freshness: a tick within the last 3s means the feed is genuinely live.
-  const [, forceTick] = useState(0)
-  useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t) }, [])
+  const { tickCount, lastTickAt } = useLiveMeta()
   const secsSinceTick = lastTickAt ? Math.floor((Date.now() - lastTickAt) / 1000) : null
   const liveStreaming = wsState === 'open' && secsSinceTick != null && secsSinceTick <= 3
 
@@ -364,18 +494,6 @@ export default function OptionChain() {
   }, [wsBrokers])
   const wsBrokerInfo = wsBrokers[wsBroker]
   const feedHintIsWarning = !wsBrokerInfo?.running || (wsState === 'open' && wsBrokerInfo && !wsBrokerInfo.connected)
-
-  // Per-strike live ticks from each broker. Angel ticks are keyed by Angel's
-  // option token; Upstox ticks by its instrument key (both aligned to the chain's
-  // strike order via the call/put token arrays).
-  const angelTick = (i, side) => {
-    const token = (side === 'call' ? chain?.callTokens : chain?.putTokens)?.[i]
-    return token != null ? ticks[`angel|${token}`] : null
-  }
-  const upTick = (i, side) => {
-    const token = (side === 'call' ? upTokens.callTokens : upTokens.putTokens)?.[i]
-    return token != null ? ticks[`upstox|${token}`] : null
-  }
 
   const markScrollActive = useCallback(() => {
     const panes = [callScrollRef.current, putScrollRef.current, strikeScrollRef.current]
@@ -398,6 +516,26 @@ export default function OptionChain() {
       put: put ? Math.max(1, put.scrollWidth - put.clientWidth) : 1,
     }
   }, [])
+
+  const updateVisibleRange = useCallback((scrollTop = 0, viewportHeight = 0) => {
+    const rowCount = chain?.strikes?.length || 0
+    if (rowCount <= VIRTUAL_ROW_THRESHOLD) {
+      setVisibleRange((prev) => (prev.start === 0 && prev.end === rowCount ? prev : { start: 0, end: rowCount }))
+      return
+    }
+    const visibleRows = Math.ceil((viewportHeight || 0) / ROW_HEIGHT)
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - VIRTUAL_OVERSCAN)
+    const end = Math.min(rowCount, start + visibleRows + (VIRTUAL_OVERSCAN * 2))
+    setVisibleRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }))
+  }, [chain])
+
+  const queueVisibleRangeUpdate = useCallback((source) => {
+    if (!source || visibleRafRef.current) return
+    visibleRafRef.current = requestAnimationFrame(() => {
+      visibleRafRef.current = 0
+      updateVisibleRange(source.scrollTop, source.clientHeight)
+    })
+  }, [updateVisibleRange])
 
   // Mirror the scrolled pane onto the other side + the strike column. The
   // ping-pong problem: writing target.scrollLeft fires the target's own scroll
@@ -429,8 +567,9 @@ export default function OptionChain() {
     if (Math.abs(target.scrollLeft - nextLeft) > 0.5) target.scrollLeft = nextLeft
     if (Math.abs(target.scrollTop - source.scrollTop) > 0.5) target.scrollTop = source.scrollTop
     if (strike && Math.abs(strike.scrollTop - source.scrollTop) > 0.5) strike.scrollTop = source.scrollTop
+    queueVisibleRangeUpdate(source)
     syncingSideRef.current = ''
-  }, [markScrollActive])
+  }, [markScrollActive, queueVisibleRangeUpdate])
 
   useEffect(() => {
     if (!chain) return undefined
@@ -445,6 +584,8 @@ export default function OptionChain() {
       call.removeEventListener('scroll', onCallScroll)
       put.removeEventListener('scroll', onPutScroll)
       if (scrollIdleTimerRef.current) clearTimeout(scrollIdleTimerRef.current)
+      if (visibleRafRef.current) cancelAnimationFrame(visibleRafRef.current)
+      visibleRafRef.current = 0
       syncingSideRef.current = ''
       call.classList.remove('oc-is-scrolling')
       put.classList.remove('oc-is-scrolling')
@@ -464,6 +605,7 @@ export default function OptionChain() {
       if (call) call.scrollLeft = scrollMaxRef.current.call
       if (put) put.scrollLeft = 0
       if (strike) strike.scrollTop = 0
+      updateVisibleRange(0, call?.clientHeight || put?.clientHeight || 0)
     })
     // The table width can change when the window/panel resizes — re-measure so
     // the cached extents (used by the per-frame sync) stay correct.
@@ -473,64 +615,28 @@ export default function OptionChain() {
       cancelAnimationFrame(id)
       window.removeEventListener('resize', onResize)
     }
-  }, [chain, measureScrollExtents])
+  }, [chain, measureScrollExtents, updateVisibleRange])
 
-  // LTP: prefer the "Live feed" broker's tick, then the other broker's, then REST.
-  const liveLtp = (i, side, restLtp) => {
-    const a = angelTick(i, side), u = upTick(i, side)
-    const first = wsBroker === 'upstox' ? [u, a] : [a, u]
-    for (const t of first) if (t && t.ltp != null) return t.ltp
-    return restLtp
-  }
-  const ltpIsLive = (i, side) => {
-    const a = angelTick(i, side), u = upTick(i, side)
-    return (a?.ltp != null) || (u?.ltp != null)
-  }
-  // OI: Angel is authoritative (Upstox also carries oi; use whichever ticked).
-  const liveOi = (i, side, restOi) => {
-    const a = angelTick(i, side), u = upTick(i, side)
-    if (a?.oi != null) return a.oi
-    if (u?.oi != null) return u.oi
-    return restOi
-  }
   const maxOi = useMemo(() => {
     if (!chain?.strikes?.length) return 0
-    const values = chain.strikes.flatMap((_, i) => {
-      const callToken = chain.callTokens?.[i]
-      const putToken = chain.putTokens?.[i]
-      const upCallToken = upTokens.callTokens?.[i]
-      const upPutToken = upTokens.putTokens?.[i]
-      const callOi = ticks[`angel|${callToken}`]?.oi ?? ticks[`upstox|${upCallToken}`]?.oi ?? chain.callOI?.[i] ?? 0
-      const putOi = ticks[`angel|${putToken}`]?.oi ?? ticks[`upstox|${upPutToken}`]?.oi ?? chain.putOI?.[i] ?? 0
-      return [Number(callOi) || 0, Number(putOi) || 0]
-    })
+    const values = chain.strikes.flatMap((_, i) => [Number(chain.callOI?.[i]) || 0, Number(chain.putOI?.[i]) || 0])
     return values.length ? Math.max(...values, 0) : 0
-  }, [chain, ticks, upTokens])
-  // Bid/Ask: prefer Upstox depth, then Angel depth, then the REST chain value.
-  const liveBid = (i, side, restVal) => {
-    const u = upTick(i, side), a = angelTick(i, side)
-    if (u?.bid != null) return u.bid
-    if (a?.bid != null) return a.bid
-    return restVal
-  }
-  const liveAsk = (i, side, restVal) => {
-    const u = upTick(i, side), a = angelTick(i, side)
-    if (u?.ask != null) return u.ask
-    if (a?.ask != null) return a.ask
-    return restVal
-  }
-  const liveGreek = (i, side, field, restVal) => {
-    const u = upTick(i, side)
-    if (field === 'iv' && u?.iv != null) return u.iv
-    if (u?.greeks?.[field] != null) return u.greeks[field]
-    return restVal
-  }
-
-  // Spot LTP: live Angel future/spot tick if present, else the REST spot.
-  const spotLtp = (() => {
-    const t = chain?.spotToken != null ? ticks[`angel|${chain.spotToken}`] : null
-    return t?.ltp != null ? t.ltp : chain?.spot
-  })()
+  }, [chain])
+  const [spotTick] = useLiveTicks([tickKey('angel', chain?.spotToken)])
+  const spotLtp = spotTick?.ltp != null ? spotTick.ltp : chain?.spot
+  const isVirtual = (chain?.strikes?.length || 0) > VIRTUAL_ROW_THRESHOLD
+  const rowIndexes = useMemo(() => {
+    const rowCount = chain?.strikes?.length || 0
+    if (!rowCount) return []
+    const start = isVirtual ? Math.min(visibleRange.start, rowCount) : 0
+    const measuredEnd = visibleRange.end || Math.min(rowCount, 40)
+    const end = isVirtual ? Math.min(Math.max(measuredEnd, start), rowCount) : rowCount
+    return Array.from({ length: end - start }, (_, offset) => start + offset)
+  }, [chain, isVirtual, visibleRange])
+  const renderedStart = rowIndexes[0] ?? 0
+  const renderedEnd = rowIndexes.length ? rowIndexes[rowIndexes.length - 1] + 1 : 0
+  const topPad = isVirtual ? renderedStart * ROW_HEIGHT : 0
+  const bottomPad = isVirtual ? Math.max(0, ((chain?.strikes?.length || 0) - renderedEnd) * ROW_HEIGHT) : 0
 
   return (
     <Box className="oc-panel">
@@ -639,30 +745,33 @@ export default function OptionChain() {
                   <tr className="oc-col-head"><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>OI</th><th>Bid / Ask</th><th className="oc-ltp">LTP</th></tr>
                 </thead>
                 <tbody>
-                  {chain.strikes.map((strike, i) => {
+                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: topPad }} /></tr>}
+                  {rowIndexes.map((i) => {
+                    const strike = chain.strikes[i]
                     const cg = up?.callGreeks?.[i]
-                    const cOi = Number(liveOi(i, 'call', chain.callOI?.[i]) ?? 0)
                     return (
                       <CallRow
                         key={strike}
                         strike={strike}
                         isAtm={strike === atm}
                         itm={!!(atm && strike < atm)}
-                        iv={liveGreek(i, 'call', 'iv', cg?.iv)}
-                        delta={liveGreek(i, 'call', 'delta', cg?.delta)}
-                        gamma={liveGreek(i, 'call', 'gamma', cg?.gamma)}
-                        theta={liveGreek(i, 'call', 'theta', cg?.theta)}
-                        vega={liveGreek(i, 'call', 'vega', cg?.vega)}
-                        oi={cOi}
-                        oiWidth={maxOi ? Math.round((cOi / maxOi) * 100) : 0}
-                        bid={liveBid(i, 'call', up?.callBid?.[i])}
-                        ask={liveAsk(i, 'call', up?.callAsk?.[i])}
-                        baLive={upTick(i, 'call')?.bid != null || angelTick(i, 'call')?.bid != null}
-                        ltp={liveLtp(i, 'call', chain.callLtp?.[i])}
-                        live={ltpIsLive(i, 'call')}
+                        restIv={cg?.iv}
+                        restDelta={cg?.delta}
+                        restGamma={cg?.gamma}
+                        restTheta={cg?.theta}
+                        restVega={cg?.vega}
+                        restOi={chain.callOI?.[i]}
+                        restBid={up?.callBid?.[i]}
+                        restAsk={up?.callAsk?.[i]}
+                        restLtp={chain.callLtp?.[i]}
+                        maxOi={maxOi}
+                        angelToken={chain.callTokens?.[i]}
+                        upToken={upTokens.callTokens?.[i]}
+                        wsBroker={wsBroker}
                       />
                     )
                   })}
+                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: bottomPad }} /></tr>}
                 </tbody>
               </table>
             </div>
@@ -674,9 +783,12 @@ export default function OptionChain() {
                   <tr className="oc-col-head"><th className="oc-strike-col">Strike</th></tr>
                 </thead>
                 <tbody>
-                  {chain.strikes.map((strike) => (
-                    <StrikeRow key={strike} strike={strike} isAtm={strike === atm} />
-                  ))}
+                  {topPad > 0 && <tr className="oc-virtual-spacer"><td style={{ height: topPad }} /></tr>}
+                  {rowIndexes.map((i) => {
+                    const strike = chain.strikes[i]
+                    return <StrikeRow key={strike} strike={strike} isAtm={strike === atm} />
+                  })}
+                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td style={{ height: bottomPad }} /></tr>}
                 </tbody>
               </table>
             </div>
@@ -693,134 +805,38 @@ export default function OptionChain() {
                   <tr className="oc-col-head"><th className="oc-ltp">LTP</th><th>Bid / Ask</th><th>OI</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr>
                 </thead>
                 <tbody>
-                  {chain.strikes.map((strike, i) => {
+                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: topPad }} /></tr>}
+                  {rowIndexes.map((i) => {
+                    const strike = chain.strikes[i]
                     const pg = up?.putGreeks?.[i]
-                    const pOi = Number(liveOi(i, 'put', chain.putOI?.[i]) ?? 0)
                     return (
                       <PutRow
                         key={strike}
                         strike={strike}
                         isAtm={strike === atm}
                         itm={!!(atm && strike > atm)}
-                        iv={liveGreek(i, 'put', 'iv', pg?.iv)}
-                        delta={liveGreek(i, 'put', 'delta', pg?.delta)}
-                        gamma={liveGreek(i, 'put', 'gamma', pg?.gamma)}
-                        theta={liveGreek(i, 'put', 'theta', pg?.theta)}
-                        vega={liveGreek(i, 'put', 'vega', pg?.vega)}
-                        oi={pOi}
-                        oiWidth={maxOi ? Math.round((pOi / maxOi) * 100) : 0}
-                        bid={liveBid(i, 'put', up?.putBid?.[i])}
-                        ask={liveAsk(i, 'put', up?.putAsk?.[i])}
-                        baLive={upTick(i, 'put')?.bid != null || angelTick(i, 'put')?.bid != null}
-                        ltp={liveLtp(i, 'put', chain.putLtp?.[i])}
-                        live={ltpIsLive(i, 'put')}
+                        restIv={pg?.iv}
+                        restDelta={pg?.delta}
+                        restGamma={pg?.gamma}
+                        restTheta={pg?.theta}
+                        restVega={pg?.vega}
+                        restOi={chain.putOI?.[i]}
+                        restBid={up?.putBid?.[i]}
+                        restAsk={up?.putAsk?.[i]}
+                        restLtp={chain.putLtp?.[i]}
+                        maxOi={maxOi}
+                        angelToken={chain.putTokens?.[i]}
+                        upToken={upTokens.putTokens?.[i]}
+                        wsBroker={wsBroker}
                       />
                     )
                   })}
+                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: bottomPad }} /></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-        <table className="oc-table">
-          <colgroup>
-            <col className="oc-col-oi" />
-            <col className="oc-col-bidask" />
-            <col className="oc-col-ltp" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-strike" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-greek" />
-            <col className="oc-col-ltp" />
-            <col className="oc-col-bidask" />
-            <col className="oc-col-oi" />
-          </colgroup>
-          <thead>
-            <tr className="oc-side-head">
-              <th className="oc-call" colSpan={8}>CALL</th>
-              <th className="oc-strike">STRIKE</th>
-              <th className="oc-put" colSpan={8}>PUT</th>
-            </tr>
-            <tr className="oc-col-head">
-              <th>OI</th><th>Bid / Ask</th><th className="oc-ltp">LTP</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th>
-              <th className="oc-strike-col">Strike</th>
-              <th>Vega</th><th>Theta</th><th>Gamma</th><th>Delta</th><th>IV</th><th className="oc-ltp">LTP</th><th>Bid / Ask</th><th>OI</th>
-            </tr>
-          </thead>
-          <tbody>
-            {!chain && <tr><td className="oc-empty" colSpan={17}>Select an underlying (index or MCX) and load the chain</td></tr>}
-            {(chain?.strikes || []).map((strike, i) => {
-              const isAtm = strike === atm
-              const cItm = atm && strike < atm, pItm = atm && strike > atm
-              const cg = up?.callGreeks?.[i], pg = up?.putGreeks?.[i]
-              const cLtp = liveLtp(i, 'call', chain.callLtp?.[i])
-              const pLtp = liveLtp(i, 'put', chain.putLtp?.[i])
-              const cLive = ltpIsLive(i, 'call')
-              const pLive = ltpIsLive(i, 'put')
-              const cOi = Number(liveOi(i, 'call', chain.callOI?.[i]) ?? 0)
-              const pOi = Number(liveOi(i, 'put', chain.putOI?.[i]) ?? 0)
-              const cOiWidth = maxOi ? Math.round((cOi / maxOi) * 100) : 0
-              const pOiWidth = maxOi ? Math.round((pOi / maxOi) * 100) : 0
-              // Bid/Ask: prefer the live Upstox tick, else the REST chain's aligned value.
-              const cBid = liveBid(i, 'call', up?.callBid?.[i]), cAsk = liveAsk(i, 'call', up?.callAsk?.[i])
-              const pBid = liveBid(i, 'put', up?.putBid?.[i]), pAsk = liveAsk(i, 'put', up?.putAsk?.[i])
-              const cBaLive = upTick(i, 'call')?.bid != null || angelTick(i, 'call')?.bid != null
-              const pBaLive = upTick(i, 'put')?.bid != null || angelTick(i, 'put')?.bid != null
-              const cIv = liveGreek(i, 'call', 'iv', cg?.iv)
-              const cDelta = liveGreek(i, 'call', 'delta', cg?.delta)
-              const cGamma = liveGreek(i, 'call', 'gamma', cg?.gamma)
-              const cTheta = liveGreek(i, 'call', 'theta', cg?.theta)
-              const cVega = liveGreek(i, 'call', 'vega', cg?.vega)
-              const pIv = liveGreek(i, 'put', 'iv', pg?.iv)
-              const pDelta = liveGreek(i, 'put', 'delta', pg?.delta)
-              const pGamma = liveGreek(i, 'put', 'gamma', pg?.gamma)
-              const pTheta = liveGreek(i, 'put', 'theta', pg?.theta)
-              const pVega = liveGreek(i, 'put', 'vega', pg?.vega)
-              return (
-                <tr key={strike} className={`oc-row${isAtm ? ' oc-atm' : ''}`}>
-                  <td className={`oc-oi oc-call-oi${cItm ? ' oc-itm' : ''}`}>
-                    <span className="oc-oi-bar" style={{ width: `${cOiWidth}%` }} />
-                    <span className="oc-oi-val">{num(cOi)}</span>
-                  </td>
-                  <td className={`oc-bidask${cBaLive ? ' oc-live' : ''}`}>
-                    <span className="oc-bid">{px(cBid)}</span>
-                    <span className="oc-sep">/</span>
-                    <span className="oc-ask">{px(cAsk)}</span>
-                  </td>
-                  <td className={`oc-ltp${cItm ? ' oc-itm' : ''}${cLive ? ' oc-live' : ''}`}>{px(cLtp)}</td>
-                  <td className="oc-iv">{cg?.iv != null ? Number(cg.iv).toFixed(1) : '—'}</td>
-                  <td className="oc-greek">{greek(cDelta, 3)}</td>
-                  <td className="oc-greek">{greek(cGamma, 4)}</td>
-                  <td className="oc-greek">{greek(cTheta, 2)}</td>
-                  <td className="oc-greek">{greek(cVega, 2)}</td>
-                  <td className="oc-strike-cell">{num(strike)}</td>
-                  <td className="oc-greek">{greek(pVega, 2)}</td>
-                  <td className="oc-greek">{greek(pTheta, 2)}</td>
-                  <td className="oc-greek">{greek(pGamma, 4)}</td>
-                  <td className="oc-greek">{greek(pDelta, 3)}</td>
-                  <td className="oc-iv">{pg?.iv != null ? Number(pg.iv).toFixed(1) : '—'}</td>
-                  <td className={`oc-ltp${pItm ? ' oc-itm' : ''}${pLive ? ' oc-live' : ''}`}>{px(pLtp)}</td>
-                  <td className={`oc-bidask${pBaLive ? ' oc-live' : ''}`}>
-                    <span className="oc-bid">{px(pBid)}</span>
-                    <span className="oc-sep">/</span>
-                    <span className="oc-ask">{px(pAsk)}</span>
-                  </td>
-                  <td className={`oc-oi oc-put-oi${pItm ? ' oc-itm' : ''}`}>
-                    <span className="oc-oi-bar" style={{ width: `${pOiWidth}%` }} />
-                    <span className="oc-oi-val">{num(pOi)}</span>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
       </div>
     </Box>
   )

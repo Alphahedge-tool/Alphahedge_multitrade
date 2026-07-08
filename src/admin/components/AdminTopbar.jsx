@@ -8,13 +8,14 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
-import { LogOut, Settings, ShieldCheck } from 'lucide-react'
+import { LogOut, Moon, Settings, ShieldCheck, Sun } from 'lucide-react'
 import { useState } from 'react'
 
-function AdminTopbar({ admin, onLogout }) {
+function AdminTopbar({ admin, onLogout, themeMode = 'light', onToggleTheme }) {
   const [anchorEl, setAnchorEl] = useState(null)
 
   const handleCloseMenu = () => setAnchorEl(null)
+  const isDark = themeMode === 'dark'
 
   return (
     <>
@@ -42,13 +43,28 @@ function AdminTopbar({ admin, onLogout }) {
             </Typography>
           </Box>
 
-          <IconButton
-            size="small"
-            title="Settings"
-            onClick={(e) => setAnchorEl(e.currentTarget)}
-          >
-            <Settings size={17} />
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <IconButton
+              size="small"
+              title={isDark ? 'Switch to normal mode' : 'Switch to dark mode'}
+              aria-label={isDark ? 'Switch to normal mode' : 'Switch to dark mode'}
+              onClick={onToggleTheme}
+              sx={{
+                color: isDark ? 'warning.main' : 'text.secondary',
+                bgcolor: isDark ? 'rgba(246, 184, 91, .12)' : 'transparent',
+              }}
+            >
+              {isDark ? <Sun size={17} /> : <Moon size={17} />}
+            </IconButton>
+
+            <IconButton
+              size="small"
+              title="Settings"
+              onClick={(e) => setAnchorEl(e.currentTarget)}
+            >
+              <Settings size={17} />
+            </IconButton>
+          </Box>
 
           <Menu
             anchorEl={anchorEl}

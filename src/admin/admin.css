@@ -29,19 +29,45 @@
   --radius: 10px;
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ao-blue: #8EA2FF;
+  --ao-blue-hover: #AFC0FF;
+  --ao-blue-surface: #242B3A;
+  --ao-blue-bg: #171B24;
+  --ao-green: #24C6A4;
+  --ao-green-bg: #102A25;
+  --ao-red: #FF6B6B;
+  --ao-red-bg: #331A22;
+  --ao-purple: #B794F4;
+  --ao-gold: #F6B85B;
+  --ao-bold: #F3F4F6;
+  --ao-base: #D1D5DB;
+  --ao-caption: #9CA3AF;
+  --ao-placeholder: #6B7280;
+  --ao-bg: #0E0F12;
+  --ao-surface: #15171B;
+  --ao-surface-2: #1C1F24;
+  --ao-hover: #23272E;
+  --ao-border: #353A43;
+  --ao-border-soft: #282D35;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .28), 0 12px 32px rgba(0, 0, 0, .28);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .42);
+}
+
 /* Custom scrollbars for the admin surface. */
 .app-shell *::-webkit-scrollbar {
   width: 9px;
   height: 9px;
 }
 .app-shell *::-webkit-scrollbar-thumb {
-  background: #cdd2dc;
+  background: var(--ao-placeholder);
   border: 2px solid transparent;
   border-radius: 9px;
   background-clip: padding-box;
 }
 .app-shell *::-webkit-scrollbar-thumb:hover {
-  background: #b6bdca;
+  background: var(--ao-caption);
   background-clip: padding-box;
 }
 .app-shell *::-webkit-scrollbar-track {

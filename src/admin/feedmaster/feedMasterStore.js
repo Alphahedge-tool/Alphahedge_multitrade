@@ -14,6 +14,7 @@ export const FEED_MASTER_CHANGED = 'feedmaster:changed'
 export const FEED_BROKERS = [
   { id: 'angelone', label: 'Angel One', apiPath: 'angel' },
   { id: 'upstox', label: 'Upstox', apiPath: 'upstox' },
+  { id: 'zerodha', label: 'Zerodha Kite', apiPath: 'zerodha' },
   { id: 'kotak', label: 'Kotak Neo', apiPath: 'kotak' },
   { id: 'nubra', label: 'Nubra', apiPath: 'nubra' },
 ]
@@ -22,7 +23,7 @@ export const brokerApiPath = (name) => {
   const normalized = String(name || '').toLowerCase().replace(/\s/g, '')
   return FEED_BROKERS.find((b) => b.id === normalized)?.apiPath
     || FEED_BROKERS.find((b) => normalized.includes(b.id))?.apiPath
-    || { angel: 'angel', angelone: 'angel', upstox: 'upstox', kotakneov3: 'kotak', kotak: 'kotak', nubra: 'nubra' }[normalized]
+    || { angel: 'angel', angelone: 'angel', upstox: 'upstox', zerodha: 'zerodha', kite: 'zerodha', kotakneov3: 'kotak', kotak: 'kotak', nubra: 'nubra' }[normalized]
     || 'angel'
 }
 export const sessionKey = (configId) => `ahc_session_${configId}`
@@ -88,16 +89,45 @@ export function buildClient(config, session = null) {
 // shared feed (option chain, etc.) uses it with no account per request.
 export async function loginClient(config, { feedRegister = false, userName = '' } = {}) {
   const client = buildClient(config, getSavedSession(config.id))
+  client.state = `${brokerApiPath(config.broker_name)}-${config.id}-${Date.now()}`
   if (feedRegister) { client.feedRegister = true; client.userName = userName }
   const res = await brokerAutoLogin(brokerApiPath(config.broker_name), client)
   if (res.session) saveSession(config.id, res.session)
   return res
 }
 
+export function openBrokerOAuthPopup(loginUrl, broker = 'broker') {
+  return new Promise((resolve, reject) => {
+    const source = `${broker}-oauth`
+    const popup = window.open(loginUrl, `${broker}-login`, 'width=520,height=760')
+    if (!popup) {
+      reject(new Error('Browser blocked the login popup'))
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener('message', onMessage)
+      reject(new Error(`${broker} login timed out`))
+    }, 180_000)
+    function onMessage(ev) {
+      const data = ev.data || {}
+      if (data.source !== source) return
+      window.clearTimeout(timeout)
+      window.removeEventListener('message', onMessage)
+      if (data.success) resolve(data.detail || '')
+      else reject(new Error(data.detail || `${broker} login failed`))
+    }
+    window.addEventListener('message', onMessage)
+  })
+}
+
 // Compatibility aliases for the ported tradepanel components, which were written
 // against the Angel-only Admin_project store.
 export function isAngelBroker(name = '') {
   return String(name).toLowerCase().replace(/\s/g, '').includes('angel')
+}
+export function isZerodhaBroker(name = '') {
+  const n = String(name).toLowerCase().replace(/\s/g, '')
+  return n.includes('zerodha') || n.includes('kite')
 }
 export function buildAngelClient(config, _user, session = null) {
   return buildClient(config, session)

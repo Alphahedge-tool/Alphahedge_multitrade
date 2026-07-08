@@ -1,6 +1,6 @@
 import { createTheme } from '@mui/material/styles'
 
-const tokens = {
+const lightTokens = {
   blue: '#3F5BD9',
   blueHover: '#354CB5',
   blueSurface: '#E8ECFC',
@@ -17,11 +17,38 @@ const tokens = {
   hover: '#F5F7FA',
   border: '#DDDFE4',
   borderSoft: '#EAEBF1',
+  shadowCard: '0 1px 2px rgba(43, 47, 63, .06), 0 4px 16px rgba(43, 47, 63, .06)',
+  shadowPop: '0 4px 24px rgba(0, 0, 0, .12)',
 }
 
-export const adminTheme = createTheme({
+const darkTokens = {
+  blue: '#8EA2FF',
+  blueHover: '#AFC0FF',
+  blueSurface: '#242B3A',
+  blueBg: '#171B24',
+  green: '#24C6A4',
+  red: '#FF6B6B',
+  bold: '#F3F4F6',
+  base: '#D1D5DB',
+  caption: '#9CA3AF',
+  placeholder: '#6B7280',
+  bg: '#0E0F12',
+  surface: '#15171B',
+  surface2: '#1C1F24',
+  hover: '#23272E',
+  border: '#353A43',
+  borderSoft: '#282D35',
+  shadowCard: '0 1px 2px rgba(0, 0, 0, .28), 0 12px 32px rgba(0, 0, 0, .28)',
+  shadowPop: '0 18px 48px rgba(0, 0, 0, .42)',
+}
+
+export const getAdminTheme = (mode = 'light') => {
+  const isDark = mode === 'dark'
+  const tokens = isDark ? darkTokens : lightTokens
+
+  return createTheme({
   palette: {
-    mode: 'light',
+    mode,
     primary: { main: tokens.blue, dark: tokens.blueHover, light: tokens.blueSurface },
     success: { main: tokens.green },
     error: { main: tokens.red },
@@ -72,7 +99,7 @@ export const adminTheme = createTheme({
         root: {
           backgroundImage: 'none',
           borderRadius: 8,
-          boxShadow: '0 1px 2px rgba(43, 47, 63, .06), 0 4px 16px rgba(43, 47, 63, .06)',
+          boxShadow: tokens.shadowCard,
         },
       },
     },
@@ -88,8 +115,8 @@ export const adminTheme = createTheme({
         },
         containedPrimary: {
           backgroundColor: tokens.blue,
-          color: '#fff',
-          boxShadow: '0 1px 2px rgba(63, 91, 217, .35)',
+          color: isDark ? '#0E0F12' : '#fff',
+          boxShadow: isDark ? '0 1px 2px rgba(124, 149, 255, .28)' : '0 1px 2px rgba(63, 91, 217, .35)',
           '&:hover': { backgroundColor: tokens.blueHover },
         },
         outlined: {
@@ -127,7 +154,8 @@ export const adminTheme = createTheme({
           minHeight: 38,
           borderRadius: 8,
           backgroundColor: tokens.surface,
-          '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#cfd3da' },
+          color: tokens.base,
+          '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: isDark ? '#475569' : '#cfd3da' },
           '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
             borderColor: tokens.blue,
             boxShadow: `0 0 0 3px ${tokens.blueSurface}`,
@@ -190,9 +218,12 @@ export const adminTheme = createTheme({
       styleOverrides: {
         paper: {
           border: `1px solid ${tokens.borderSoft}`,
-          boxShadow: '0 4px 24px rgba(0, 0, 0, .12)',
+          boxShadow: tokens.shadowPop,
         },
       },
     },
   },
 })
+}
+
+export const adminTheme = getAdminTheme('light')

@@ -5,6 +5,7 @@
 import './accounts.js';
 import './angel.js';
 import './upstox.js';
+import './zerodha.js';
 import './kotak.js';
 import './nubra.js';
 import './users.js';

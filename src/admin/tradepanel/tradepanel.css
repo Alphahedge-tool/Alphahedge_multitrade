@@ -1,7 +1,7 @@
-﻿/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-   Angel One design system â€” Roboto + brand tokens
+/* ─────────────────────────────────────────────────────────────
+   Angel One design system — Roboto + brand tokens
    Mirrors the production token names so this feels native.
-   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+   ───────────────────────────────────────────────────────────── */
 
 @font-face {
   font-family: "Roboto";
@@ -100,7 +100,7 @@
   --shadow-pop: 0 4px 24px rgba(0, 0, 0, .12);
   --radius: 10px;
 
-  /* â”€â”€ Angel One real design tokens (subset used by the Basket panel) â”€â”€
+  /* ── Angel One real design tokens (subset used by the Basket panel) ──
      Lifted from Angel's production stylesheet so the basket maps to their
      genuine --color-* names. Light values; see .dark-mode-theme for dark. */
   --color-neutral-background: #ffffff;
@@ -131,6 +131,63 @@
   text-rendering: optimizeLegibility;
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ao-blue: #8EA2FF;
+  --ao-blue-hover: #AFC0FF;
+  --ao-blue-pressed: #D2DCFF;
+  --ao-blue-surface: #242B3A;
+  --ao-blue-bg: #171B24;
+  --ao-green: #24C6A4;
+  --ao-green-surface: #173D34;
+  --ao-green-bg: #102A25;
+  --ao-up-bg: #123B38;
+  --ao-red: #FF6B6B;
+  --ao-red-surface: #3B1F28;
+  --ao-red-bg: #331A22;
+  --ao-down-bg: #351C1F;
+  --ao-purple: #B794F4;
+  --ao-purple-surface: #2A2146;
+  --ao-gold: #F6B85B;
+  --ao-yellow: #F8C66A;
+  --ao-cyan: #38DCEB;
+  --ao-bold: #F3F4F6;
+  --ao-base: #D1D5DB;
+  --ao-muted: #777E8A;
+  --ao-caption: #9CA3AF;
+  --ao-placeholder: #6B7280;
+  --ao-bg: #0E0F12;
+  --ao-surface: #15171B;
+  --ao-surface-2: #1C1F24;
+  --ao-hover: #23272E;
+  --ao-border: #353A43;
+  --ao-border-soft: #282D35;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .28), 0 12px 32px rgba(0, 0, 0, .28);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .42);
+  --color-neutral-background: #15171B;
+  --color-neutral-background-grey: #1C1F24;
+  --color-neutral-background-hover: #23272E;
+  --color-border-grey: #353A43;
+  --color-neutral-border: #282D35;
+  --color-text-bold: #F3F4F6;
+  --color-text-base: #D1D5DB;
+  --color-neutral-caption: #9CA3AF;
+  --color-text-muted: #777E8A;
+  --color-neutral-placeholder: #6B7280;
+  --color-text-blue: #8EA2FF;
+  --color-text-blue-hover: #AFC0FF;
+  --color-surface-primary: #242B3A;
+  --color-background-primary: #171B24;
+  --color-success-main: #24C6A4;
+  --color-background-success: #102A25;
+  --color-error-main: #FF6B6B;
+  --color-background-error: #331A22;
+  --color-icon-gold: #F6B85B;
+  --color-text-secondary: #B794F4;
+  --color-surface-secondary: #2A2146;
+  --color-basket-shadow: 6px 6px 28px 0px rgba(0, 0, 0, .32);
+}
+
 .trade-panel * { box-sizing: border-box; }
 
 /* Scoped body/root styles for the embedded admin trade panel. */
@@ -157,7 +214,7 @@
 *::-webkit-scrollbar-thumb:hover { background: #b6bdca; background-clip: padding-box; }
 *::-webkit-scrollbar-track { background: transparent; }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ App shell â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ───────────────────────── App shell ───────────────────────── */
 .app-shell {
   height: 100vh;
   overflow: hidden;
@@ -243,7 +300,7 @@
 .btn.secondary:hover { background: var(--ao-hover); border-color: #cfd3da; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Config strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ─────────────────────── Config strip ─────────────────────── */
 .config-strip {
   display: grid;
   grid-template-columns: minmax(280px, 520px) auto;
@@ -286,7 +343,7 @@ label {
   font-weight: 500;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Settings table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ───────────────────────── Settings table ───────────────────────── */
 .grid-wrap {
   width: 100%;
   overflow: auto;
@@ -382,7 +439,7 @@ select { min-width: 96px; }
 .api-secret, .totp-secret { min-width: 148px; }
 .pin { min-width: 80px; }
 
-/* Credential inputs â€” always-visible boxes so they're easy to fill */
+/* Credential inputs — always-visible boxes so they're easy to fill */
 .client-table input.cred-box {
   height: 32px;
   border: 1px solid var(--ao-border);
@@ -452,7 +509,7 @@ select { min-width: 96px; }
 .icon.danger { color: var(--ao-red); }
 .icon.danger:hover { background: var(--ao-red-surface); }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Strategies view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ───────────────────────── Strategies view ───────────────────────── */
 .strategies-view {
   display: grid;
   grid-template-columns: minmax(660px, 700px) minmax(0, 1fr);
@@ -463,18 +520,18 @@ select { min-width: 96px; }
   padding: 14px;
   gap: 14px;
 }
-/* No basket yet (no legs added): show only the option chain â€” the basket pops
+/* No basket yet (no legs added): show only the option chain — the basket pops
    in as its own column once the first leg is added from the chain. */
 .strategies-view.no-basket {
   grid-template-columns: minmax(660px, 700px);
   justify-content: start;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Option chain panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ─────────────────────── Option chain panel ─────────────────────── */
 .option-chain-panel {
   position: relative;
   display: grid;
-  /* titlebar Â· controls Â· tags Â· meta Â· table(fills) Â· status */
+  /* titlebar · controls · tags · meta · table(fills) · status */
   grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
@@ -547,7 +604,7 @@ select { min-width: 96px; }
   box-shadow: 0 0 0 3px var(--ao-blue-surface);
 }
 
-/* Custom pill dropdown â€” trigger mirrors the native selects above */
+/* Custom pill dropdown — trigger mirrors the native selects above */
 .pill-select { position: relative; min-width: 0; }
 .pill-select-trigger {
   display: flex;
@@ -657,7 +714,7 @@ select { min-width: 96px; }
 .pill-select-option:hover { background: var(--ao-surface-2); }
 .pill-select-option.active { background: var(--ao-blue-surface); color: var(--ao-blue); }
 
-/* Option pills â€” index vs equity vs commodity vs weekly/monthly */
+/* Option pills — index vs equity vs commodity vs weekly/monthly */
 .opt-pill {
   display: inline-flex;
   align-items: center;
@@ -669,11 +726,11 @@ select { min-width: 96px; }
   letter-spacing: .04em;
   flex: none;
 }
-.opt-pill.pill-idx     { background: #FEEED4; color: #B5731B; }   /* index â†’ yellow */
-.opt-pill.pill-eq      { background: var(--ao-blue-surface); color: var(--ao-blue); }    /* equity â†’ blue */
-.opt-pill.pill-comm    { background: var(--ao-green-surface); color: var(--ao-green); }  /* commodity â†’ green */
-.opt-pill.pill-weekly  { background: var(--ao-blue-surface); color: var(--ao-blue); }    /* weekly â†’ blue */
-.opt-pill.pill-monthly { background: var(--ao-purple-surface); color: var(--ao-purple); }/* monthly â†’ violet */
+.opt-pill.pill-idx     { background: #FEEED4; color: #B5731B; }   /* index → yellow */
+.opt-pill.pill-eq      { background: var(--ao-blue-surface); color: var(--ao-blue); }    /* equity → blue */
+.opt-pill.pill-comm    { background: var(--ao-green-surface); color: var(--ao-green); }  /* commodity → green */
+.opt-pill.pill-weekly  { background: var(--ao-blue-surface); color: var(--ao-blue); }    /* weekly → blue */
+.opt-pill.pill-monthly { background: var(--ao-purple-surface); color: var(--ao-purple); }/* monthly → violet */
 
 .chain-icon-btn {
   height: 38px;
@@ -944,7 +1001,7 @@ select { min-width: 96px; }
 .chain-table .call-ltp { color: var(--ao-green); }
 .chain-table .put-ltp  { color: var(--ao-red); }
 
-/* Tick flash â€” green when LTP rises, red when it falls */
+/* Tick flash — green when LTP rises, red when it falls */
 @keyframes ltp-flash-up {
   0% { background: var(--ao-green-surface); box-shadow: inset 0 0 0 9999px rgba(0, 143, 117, .18); }
   100% { background: transparent; box-shadow: none; }
@@ -1022,7 +1079,7 @@ select { min-width: 96px; }
 .chain-table tbody tr:hover .strike { background: var(--ao-blue-surface); }
 .chain-table .atm-row:hover td { background: var(--ao-blue-surface); }
 
-/* Action column â€” always-visible Buy/Sell pair, centered in the cell */
+/* Action column — always-visible Buy/Sell pair, centered in the cell */
 .chain-table td.action { padding: 0 4px; }
 .trade-actions {
   display: flex;
@@ -1093,7 +1150,7 @@ select { min-width: 96px; }
   flex: none;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Strategy workspace â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ───────────────────────── Strategy workspace ───────────────────────── */
 .strategy-workspace {
   min-width: 0;
   height: 100%;
@@ -1156,7 +1213,7 @@ select { min-width: 96px; }
 .strategy-panel .text-slate-200 { color: var(--ao-bold) !important; }
 .strategy-panel .text-slate-500 { color: var(--ao-caption) !important; }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Empty view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ───────────────────────── Empty view ───────────────────────── */
 .empty-view {
   display: grid;
   place-content: center;
@@ -1321,7 +1378,7 @@ select { min-width: 96px; }
   max-width: 260px;
   padding: 8px 16px;
   border-right: 0;
-  border-bottom: 1px solid #EEF1F5;
+  border-bottom: 1px solid var(--ao-border-soft);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1335,13 +1392,13 @@ select { min-width: 96px; }
   top: 0;
   z-index: 1;
   height: 42px;
-  background: #F7F9FD;
+  background: var(--ao-surface-2);
   color: var(--ao-base);
   font-weight: 700;
   font-size: var(--fs-base);
   text-align: left;
   vertical-align: middle;
-  box-shadow: inset 0 -1px 0 #E4E8EF;
+  box-shadow: inset 0 -1px 0 var(--ao-border-soft);
 }
 .book-table th:nth-child(4),
 .book-table td:nth-child(4),
@@ -1349,7 +1406,7 @@ select { min-width: 96px; }
 .book-table td:nth-child(6),
 .book-table th:nth-child(7),
 .book-table td:nth-child(7) {
-  border-left: 1px solid #E8ECF2;
+  border-left: 1px solid var(--ao-border-soft);
 }
 .book-table td {
   color: var(--ao-base);
@@ -1428,8 +1485,8 @@ select { min-width: 96px; }
   color: var(--ao-purple);
 }
 .book-tag.option.pe {
-  background: #FFF0DA;
-  color: #8A5A18;
+  background: color-mix(in srgb, var(--ao-gold) 18%, var(--ao-surface));
+  color: var(--ao-gold);
 }
 .book-tag.side.buy {
   background: var(--ao-green-bg);
@@ -1449,8 +1506,8 @@ select { min-width: 96px; }
 }
 .book-tag.ordertype.slm,
 .book-tag.ordertype.sl {
-  background: #FFF0DA;
-  color: #8A5A18;
+  background: color-mix(in srgb, var(--ao-gold) 18%, var(--ao-surface));
+  color: var(--ao-gold);
 }
 .book-qty-cell {
   justify-items: end;
@@ -1583,14 +1640,14 @@ select { min-width: 96px; }
   .option-chain-panel { min-height: 640px; }
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Basket panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ─────────────────────────── Basket panel ─────────────────────────── */
 /* Multi-leg order ticket shown beside the option chain. Restyled to Angel
    One's real design tokens (--color-* from their stylesheet). The basket rules
    below are written against the app's --ao-* names, so we remap those names to
-   the genuine Angel values once, scoped to .basket-panel â€” every basket color
+   the genuine Angel values once, scoped to .basket-panel — every basket color
    becomes authentically Angel without touching the rest of the app. */
 .basket-panel {
-  /* Angel One real palette (light). Maps app tokens â†’ Angel --color-* values. */
+  /* Angel One real palette (light). Maps app tokens → Angel --color-* values. */
   --ao-surface: var(--color-neutral-background, #ffffff);
   --ao-surface-2: var(--color-neutral-background-grey, #F1F4FD);
   --ao-hover: var(--color-neutral-background-hover, #F5F7FA);
@@ -1656,7 +1713,7 @@ select { min-width: 96px; }
   .basket-panel.is-closing { transform: none; }
 }
 
-/* â”€â”€ Title bar â”€â”€ */
+/* ── Title bar ── */
 .basket-titlebar {
   display: flex;
   align-items: center;
@@ -1680,7 +1737,7 @@ select { min-width: 96px; }
 .basket-name-input:focus { outline: none; box-shadow: 0 0 0 3px var(--ao-blue-surface); }
 .basket-count { color: var(--ao-caption); font-size: var(--fs-sm); white-space: nowrap; }
 
-/* Search: capped width, pushed to the right â€” not full-width. */
+/* Search: capped width, pushed to the right — not full-width. */
 .basket-search { position: relative; flex: 0 1 360px; max-width: 360px; min-width: 0; margin-left: auto; display: flex; align-items: center; }
 .basket-search-icon { position: absolute; left: 9px; color: var(--ao-placeholder); pointer-events: none; }
 .basket-search-input {
@@ -1700,7 +1757,7 @@ select { min-width: 96px; }
 }
 .basket-search-clear:hover { background: #F1F4FD; color: #425061; }
 
-/* Search results dropdown â€” portalled to <body>, so it uses explicit colors
+/* Search results dropdown — portalled to <body>, so it uses explicit colors
    (the --ao-* palette is scoped to .basket-panel and wouldn't reach here). */
 .basket-search-dd {
   z-index: 9999;
@@ -1753,7 +1810,7 @@ select { min-width: 96px; }
 }
 .basket-window-btn:hover { background: var(--ao-hover); color: var(--ao-base); }
 
-/* â”€â”€ Column heads + rows share one grid template â”€â”€ */
+/* ── Column heads + rows share one grid template ── */
 .basket-colhead,
 .basket-row {
   display: grid;
@@ -1796,7 +1853,7 @@ select { min-width: 96px; }
   position: absolute;
   /* Sit in the middle of the 8px column-gap to the cell's left, not hugging
      the next control. The cell edge is at 0; the gap spans -8px..0, so its
-     centre is -4px â€” but the Product/Expiry control is left-aligned in the
+     centre is -4px — but the Product/Expiry control is left-aligned in the
      cell, so nudge a bit further into the gap for visual centring. */
   left: -4px;
   top: 50%;
@@ -1815,7 +1872,7 @@ select { min-width: 96px; }
 .basket-colhead .bc-cepe,
 .basket-colhead .bc-product { justify-content: center; }
 
-/* Rows grow with content but cap out, then scroll â€” keeps the basket compact. */
+/* Rows grow with content but cap out, then scroll — keeps the basket compact. */
 .basket-rows { overflow-y: auto; min-height: 0; max-height: 60vh; }
 /* Dashed gray separator between legs, like the real Angel basket. */
 .basket-row { border-bottom: 1px dashed var(--ao-border); }
@@ -1974,7 +2031,7 @@ select { min-width: 96px; }
 .basket-margin strong { color: var(--ao-bold); font-weight: 700; }
 .basket-margin strong.is-loading { color: var(--ao-caption); font-weight: 600; }
 .basket-margin strong.is-error { color: var(--ao-red); cursor: help; }
-/* Manual margin refresh â€” recomputes at the current live prices on demand. */
+/* Manual margin refresh — recomputes at the current live prices on demand. */
 .basket-margin-refresh {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; border: none; border-radius: 4px;
@@ -1986,7 +2043,7 @@ select { min-width: 96px; }
 @keyframes basket-spin { to { transform: rotate(360deg); } }
 .basket-multiplier { display: inline-flex; align-items: center; gap: 8px; color: var(--ao-caption); }
 /* Hide the browser's native number-input spinners everywhere in the basket so
-   only our custom â–²â–¼ steppers show (no doubled arrows). */
+   only our custom ▲▼ steppers show (no doubled arrows). */
 .basket-panel input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .basket-panel input[type="number"]::-webkit-outer-spin-button,
 .basket-panel input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -2025,7 +2082,7 @@ select { min-width: 96px; }
 .basket-charges-info { color: var(--ao-placeholder); cursor: help; flex: none; display: block; }
 .basket-charges-tip:hover .basket-charges-info { color: var(--ao-blue); }
 
-/* Charges breakdown popover â€” shown on hovering the â“˜. */
+/* Charges breakdown popover — shown on hovering the ⓘ. */
 .basket-charges-tip { position: relative; display: inline-flex; align-items: center; }
 .charges-popover {
   position: absolute;
@@ -2050,7 +2107,7 @@ select { min-width: 96px; }
   visibility: visible;
   transform: translateX(-50%) translateY(0);
 }
-/* Little arrow pointing down to the â“˜. */
+/* Little arrow pointing down to the ⓘ. */
 .charges-popover::after {
   content: "";
   position: absolute;
@@ -2448,7 +2505,7 @@ select { min-width: 96px; }
   font-size: var(--fs-sm);
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Admin account bar (Trade Panel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ─────────────────── Admin account bar (Trade Panel) ─────────────────── */
 .trade-panel {
   display: flex;
   flex-direction: column;
@@ -2564,7 +2621,7 @@ select { min-width: 96px; }
   gap: 14px;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Get Position view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ─────────────────── Get Position view ─────────────────── */
 .positions-view {
   flex: 1;
   min-height: 0;
@@ -2611,7 +2668,7 @@ select { min-width: 96px; }
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .positions-compact-select select:hover {
-  border-color: #cfd3da;
+  border-color: var(--ao-caption);
 }
 .positions-compact-select select:focus {
   border-color: var(--ao-blue);
@@ -2803,7 +2860,7 @@ select { min-width: 96px; }
   border-radius: 8px;
   background: var(--ao-surface);
   color: var(--ao-blue);
-  box-shadow: 0 5px 16px rgba(43, 47, 63, .08);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
   transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease;
 }
@@ -2840,7 +2897,7 @@ select { min-width: 96px; }
   height: auto;
   max-width: none;
   padding: 9px 16px;
-  border-bottom: 1px solid #EEF1F5;
+  border-bottom: 1px solid var(--ao-border-soft);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2851,13 +2908,13 @@ select { min-width: 96px; }
   overflow: visible;
   position: sticky;
   height: 42px;
-  background: #F8FAFE;
-  color: #6f7785;
+  background: var(--ao-surface-2);
+  color: var(--ao-caption);
   font-size: 14px;
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0;
-  box-shadow: inset 0 -1px 0 #E4E8EF;
+  box-shadow: inset 0 -1px 0 var(--ao-border-soft);
 }
 .position-col-head {
   position: relative;
@@ -2880,7 +2937,7 @@ select { min-width: 96px; }
   align-items: center;
   border: 0;
   background: transparent;
-  color: #6f7785;
+  color: var(--ao-caption);
   cursor: pointer;
 }
 .position-sort-btn {
@@ -2974,16 +3031,16 @@ select { min-width: 96px; }
   padding: 0 8px 0 10px;
   border: 1px solid var(--ao-border);
   border-radius: 8px;
-  background: linear-gradient(180deg, #FFFFFF, #FBFCFF);
+  background: linear-gradient(180deg, var(--ao-surface), var(--ao-surface-2));
   color: var(--ao-bold);
-  box-shadow: 0 1px 1px rgba(43, 47, 63, .03);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
   outline: none;
   transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
 .position-select-trigger:hover {
-  border-color: #cfd3da;
-  background: #FFFFFF;
+  border-color: var(--ao-caption);
+  background: var(--ao-surface);
 }
 .position-select.open .position-select-trigger,
 .position-select-trigger:focus-visible {
@@ -3048,7 +3105,7 @@ select { min-width: 96px; }
   border: 1px solid var(--ao-border);
   border-radius: 9px;
   background: var(--ao-surface);
-  box-shadow: 0 10px 28px rgba(43, 47, 63, .14);
+  box-shadow: var(--shadow-pop);
 }
 .position-select-menu-portal {
   top: auto;
@@ -3162,33 +3219,33 @@ select { min-width: 96px; }
   color: var(--ao-blue);
 }
 .position-book-table tbody tr:hover td {
-  background: #FBFCFF;
+  background: var(--ao-hover);
 }
 .position-book-table tbody tr.position-row-short td {
-  background: #FFF7F7;
+  background: color-mix(in srgb, var(--ao-red-bg) 58%, var(--ao-surface));
 }
 .position-book-table tbody tr.position-row-short:hover td {
-  background: #FFF1F1;
+  background: color-mix(in srgb, var(--ao-red-bg) 74%, var(--ao-hover));
 }
 .position-book-table tbody tr.position-row-selected td {
-  background: #F4F7FF;
+  background: color-mix(in srgb, var(--ao-blue-bg) 68%, var(--ao-surface));
 }
 .position-book-table tbody tr.position-row-selected:hover td {
-  background: #EEF3FF;
+  background: color-mix(in srgb, var(--ao-blue-bg) 80%, var(--ao-hover));
 }
 .position-book-table tbody tr.position-row-short.position-row-selected td {
-  background: #FFF0F3;
+  background: color-mix(in srgb, var(--ao-red-bg) 46%, var(--ao-blue-bg));
 }
 .position-book-table tbody tr.position-row-short.position-row-selected:hover td {
-  background: #FFE9EE;
+  background: color-mix(in srgb, var(--ao-red-bg) 58%, var(--ao-blue-bg));
 }
 .position-book-table tbody tr.position-expiry-row td {
   height: 34px;
   padding: 6px 16px;
-  background: #F5F7FB;
-  border-top: 1px solid #E4E8EF;
-  border-bottom: 1px solid #E4E8EF;
-  color: #6f7785;
+  background: var(--ao-surface-2);
+  border-top: 1px solid var(--ao-border-soft);
+  border-bottom: 1px solid var(--ao-border-soft);
+  color: var(--ao-caption);
   text-align: left;
 }
 .position-expiry-row-content {
@@ -3203,9 +3260,9 @@ select { min-width: 96px; }
   height: 22px;
   padding: 0 8px;
   border-radius: 999px;
-  background: #FFFFFF;
-  border: 1px solid #DDE3EF;
-  color: #344054;
+  background: var(--ao-surface);
+  border: 1px solid var(--ao-border);
+  color: var(--ao-bold);
   font-size: 12px;
   font-weight: 600;
 }
@@ -3216,15 +3273,15 @@ select { min-width: 96px; }
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #EEF2F8;
-  color: #8A94A6;
+  background: var(--ao-hover);
+  color: var(--ao-caption);
   font-size: 12px;
   font-weight: 600;
 }
 .position-expiry-row small:first-of-type {
-  background: #FFFFFF;
-  border: 1px solid #DDE3EF;
-  color: #536179;
+  background: var(--ao-surface);
+  border: 1px solid var(--ao-border);
+  color: var(--ao-base);
 }
 .position-expiry-row strong {
   margin-left: auto;
@@ -3254,7 +3311,8 @@ select { min-width: 96px; }
 .position-book-table td:nth-child(6),
 .position-book-table th:nth-child(7),
 .position-book-table td:nth-child(7) {
-  border-left: 1px solid #E8ECF2;
+  border-left: 1px solid var(--ao-border-soft);
+  border-left-color: var(--ao-border-soft);
 }
 .order-book-table th:nth-child(1),
 .order-book-table td:nth-child(1) { width: 30%; text-align: left; }
@@ -3296,12 +3354,12 @@ select { min-width: 96px; }
   width: 17px;
   height: 17px;
   padding: 0;
-  border: 1px solid #BFC7D4;
+  border: 1px solid var(--ao-border);
   border-radius: 4px;
-  background: #FFFFFF;
-  color: #FFFFFF;
+  background: var(--ao-surface);
+  color: var(--ao-surface);
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
   transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease;
 }
 .position-row-check:hover {
@@ -3324,7 +3382,7 @@ select { min-width: 96px; }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #1f2937;
+  color: var(--ao-bold);
   font-size: 15px;
   font-weight: 700;
 }
@@ -3332,14 +3390,14 @@ select { min-width: 96px; }
   flex: none;
   padding: 2px 7px;
   border-radius: 999px;
-  background: #F1F5FB;
-  color: #536179;
+  background: var(--ao-hover);
+  color: var(--ao-base);
   font-size: 14px;
   font-weight: 600;
 }
 .position-strike {
   flex: none;
-  color: #1f2937;
+  color: var(--ao-bold);
   font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -3399,31 +3457,31 @@ select { min-width: 96px; }
   color: var(--ao-purple);
 }
 .book-tag.option.pe {
-  background: #FFF0DA;
-  color: #8A5A18;
+  background: color-mix(in srgb, var(--ao-gold) 18%, var(--ao-surface));
+  color: var(--ao-gold);
 }
 .book-tag.side.buy {
-  background: #EAF7F3;
+  background: var(--ao-green-bg);
   color: var(--ao-green);
 }
 .book-tag.side.sell {
-  background: #FFF0F0;
+  background: var(--ao-red-bg);
   color: var(--ao-red);
 }
 .book-tag.product {
-  background: #F4F6FB;
+  background: var(--ao-surface-2);
   color: var(--ao-caption);
 }
 .book-qty-cell {
   justify-items: end;
   align-content: center;
-  color: #1f2937;
+  color: var(--ao-bold);
   font-size: 13px;
   font-weight: 400;
 }
 .book-qty-cell small,
 .book-status-cell small {
-  color: #6f7785;
+  color: var(--ao-caption);
   font-size: 12px;
   font-weight: 400;
 }
@@ -3434,8 +3492,8 @@ select { min-width: 96px; }
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #F3F6FB;
-  color: #536179;
+  background: var(--ao-hover);
+  color: var(--ao-base);
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -3452,7 +3510,7 @@ select { min-width: 96px; }
   font-size: 13px;
 }
 .position-price {
-  color: #1f2937;
+  color: var(--ao-bold);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }

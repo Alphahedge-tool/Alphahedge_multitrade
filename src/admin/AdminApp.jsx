@@ -2,8 +2,9 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { CssBaseline, ThemeProvider } from '@mui/material'
 import { LocalizationProvider } from '@mui/x-date-pickers'
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
+import { useEffect, useMemo, useState } from 'react'
 
-import { adminTheme } from './theme'
+import { getAdminTheme } from './theme'
 import AdminLayout from './layout/AdminLayout'
 import AdminDashboard from './pages/AdminDashboard'
 import UsersPage from './pages/UsersPage'
@@ -20,15 +21,34 @@ import './tradepanel/tradepanel.css'
 // sidebar links all resolve without crashing (they get filled in later steps).
 export default function AdminApp() {
   const admin = { username: 'Admin' }
+  const [themeMode, setThemeMode] = useState(() => {
+    try {
+      return localStorage.getItem('alphahedge-theme') === 'dark' ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+  const theme = useMemo(() => getAdminTheme(themeMode), [themeMode])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode
+    try {
+      localStorage.setItem('alphahedge-theme', themeMode)
+    } catch {
+      /* ignore storage failures */
+    }
+  }, [themeMode])
+
+  const toggleTheme = () => setThemeMode((mode) => (mode === 'dark' ? 'light' : 'dark'))
 
   return (
-    <ThemeProvider theme={adminTheme}>
+    <ThemeProvider theme={theme}>
       <CssBaseline />
       <LocalizationProvider dateAdapter={AdapterDayjs}>
         <HashRouter>
           <Routes>
             <Route path="/" element={<Navigate to="/admin" replace />} />
-            <Route path="/admin" element={<AdminLayout admin={admin} />}>
+            <Route path="/admin" element={<AdminLayout admin={admin} themeMode={themeMode} onToggleTheme={toggleTheme} />}>
               <Route index element={<AdminDashboard />} />
               <Route path="users" element={<UsersPage />} />
               <Route path="masters/stocks" element={<Placeholder title="Stocks Master" />} />

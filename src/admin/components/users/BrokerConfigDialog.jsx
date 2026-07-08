@@ -5,12 +5,14 @@ import {
 } from '@mui/material'
 import { Pencil, PlugZap, Plus, Trash2 } from 'lucide-react'
 import { apiGet, apiPost, brokerAutoLogin } from '../../config/api'
+import { openBrokerOAuthPopup } from '../../feedmaster/feedMasterStore'
 
-// Per-broker credential field schemas. All 4 brokers supported. account_id maps
+// Per-broker credential field schemas. All 5 brokers supported. account_id maps
 // to broker_accounts.client_code, app_key -> api_key, app_secret -> api_secret.
 const BROKERS = [
   { id: 'angelone', label: 'Angel One', apiPath: 'angel' },
   { id: 'upstox', label: 'Upstox', apiPath: 'upstox' },
+  { id: 'zerodha', label: 'Zerodha Kite', apiPath: 'zerodha' },
   { id: 'kotak', label: 'Kotak Neo', apiPath: 'kotak' },
   { id: 'nubra', label: 'Nubra', apiPath: 'nubra' },
 ]
@@ -23,6 +25,7 @@ function normalizeBroker(name) {
   const n = String(name || '').toLowerCase().replace(/\s/g, '')
   if (n.includes('angel')) return 'angelone'
   if (n.includes('upstox')) return 'upstox'
+  if (n.includes('zerodha') || n.includes('kite')) return 'zerodha'
   if (n.includes('kotak')) return 'kotak'
   if (n.includes('nubra')) return 'nubra'
   return BROKERS.some((b) => b.id === n) ? n : 'angelone'
@@ -31,6 +34,7 @@ function normalizeBroker(name) {
 const FIELDS = {
   angelone: ['account_id', 'pin', 'totp_secret', 'app_key'],
   upstox: ['account_id', 'app_key', 'app_secret', 'pin', 'totp_secret', 'phone'],
+  zerodha: ['account_id', 'app_key', 'app_secret'],
   kotak: ['account_id', 'app_secret', 'pin', 'totp_secret', 'phone'],
   nubra: ['pin', 'totp_secret', 'phone'],
 }
@@ -41,11 +45,12 @@ const FIELDS = {
 const LABELS_BY_BROKER = {
   angelone: { account_id: 'Client Code', pin: 'PIN', totp_secret: 'TOTP Secret', app_key: 'API Key' },
   upstox: { account_id: 'User ID', app_key: 'API Key', app_secret: 'API Secret', pin: 'PIN', totp_secret: 'TOTP Secret', phone: 'Phone' },
+  zerodha: { account_id: 'User ID (optional)', app_key: 'API Key', app_secret: 'API Secret' },
   kotak: { account_id: 'UCC (Client Code)', app_secret: 'Access Token (NeoFinKey)', pin: 'MPIN', totp_secret: 'TOTP Secret', phone: 'Mobile (+91…)' },
   nubra: { pin: 'MPIN', totp_secret: 'TOTP Secret', phone: 'Phone' },
 }
 const labelFor = (broker, field) => LABELS_BY_BROKER[broker]?.[field] || field
-const brokerApiPath = (name) => BROKERS.find((b) => b.id === name)?.apiPath || 'angel'
+const brokerApiPath = (name) => BROKERS.find((b) => b.id === normalizeBroker(name))?.apiPath || 'angel'
 const emptyConfig = () => ({ broker_name: 'angelone', account_id: '', app_key: '', app_secret: '', pin: '', totp_secret: '', phone: '' })
 
 // BrokerConfigDialog manages ALL broker accounts for one user (alias). Add, edit,
@@ -136,15 +141,21 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
     setBusy(c.id); setError('')
     try {
       const client = {
+        state: `${brokerApiPath(c.broker_name)}-${c.id}-${Date.now()}`,
         configId: c.id, // so the resolved account id (e.g. Upstox user_id) saves back
         clientCode: c.account_id, apiKey: c.app_key, apiSecret: c.app_secret,
         pin: c.pin, mpin: c.pin, totpSecret: c.totp_secret, phone: c.phone,
         mobileNumber: c.phone, ucc: c.account_id, accessToken: c.app_key || c.app_secret,
         autoLogin: true,
       }
-      const res = await brokerAutoLogin(brokerApiPath(c.broker_name), client)
+      const path = brokerApiPath(c.broker_name)
+      let res = await brokerAutoLogin(path, client)
+      if (res.needsLogin && res.loginUrl) {
+        const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)
+        res = await brokerAutoLogin(path, { ...client, clientCode: account || client.clientCode, userId: account || client.clientCode })
+      }
       if (res.needsOtp) onToast?.('Nubra needs one-time OTP — use the OTP flow')
-      else if (res.needsLogin) onToast?.('Upstox needs browser login')
+      else if (res.needsLogin) onToast?.(`${BROKERS.find((b) => b.apiPath === path)?.label || c.broker_name} needs browser login`)
       else {
         onToast?.(`${c.broker_name} logged in — ${res.sessionSource || 'live'}`)
         // Upstox resolves the real user_id on login and saves it to account_id;

@@ -5,10 +5,10 @@ import {
 } from '@mui/material'
 import { CheckCircle2, PlugZap, Radio, XCircle } from 'lucide-react'
 import { apiGet } from '../config/api'
-import { FEED_BROKERS, loginClient, saveFeedMaster, getSavedFeedMaster, getFeedState, saveFeedState } from '../feedmaster/feedMasterStore'
+import { FEED_BROKERS, loginClient, openBrokerOAuthPopup, saveFeedMaster, getSavedFeedMaster, getFeedState, saveFeedState } from '../feedmaster/feedMasterStore'
 
 const brokerLabel = (name) => FEED_BROKERS.find((b) => b.id === String(name).toLowerCase())?.label
-  || { angel: 'Angel One', upstox: 'Upstox', kotak: 'Kotak Neo', nubra: 'Nubra', angelone: 'Angel One', kotakneov3: 'Kotak Neo' }[String(name).toLowerCase()]
+  || { angel: 'Angel One', upstox: 'Upstox', zerodha: 'Zerodha Kite', kite: 'Zerodha Kite', kotak: 'Kotak Neo', nubra: 'Nubra', angelone: 'Angel One', kotakneov3: 'Kotak Neo' }[String(name).toLowerCase()]
   || name
 
 // Feed Master — a GLOBAL feed that can hold live broker accounts from MULTIPLE
@@ -123,7 +123,12 @@ export default function Feedmaster() {
     await Promise.all(chosen.map(async (c) => {
       const base = { label: brokerLabel(c.broker_name), userId, userName: uname, account: c.account_id, broker: c.broker_name }
       try {
-        const res = await loginClient(c, { feedRegister: true, userName: uname })
+        let res = await loginClient(c, { feedRegister: true, userName: uname })
+        if (res.needsLogin && res.loginUrl) {
+          const broker = res.broker || String(c.broker_name || '').toLowerCase()
+          const account = await openBrokerOAuthPopup(res.loginUrl, broker)
+          res = await loginClient({ ...c, account_id: account || c.account_id }, { feedRegister: true, userName: uname })
+        }
         let status = 'ok', message = res.sessionSource || 'live'
         if (res.needsOtp) { status = 'needs-otp'; message = 'needs one-time OTP' }
         else if (res.needsLogin) { status = 'needs-login'; message = 'needs browser login' }
