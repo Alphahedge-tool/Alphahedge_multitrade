@@ -4,6 +4,135 @@ import { route, readJSON, ApiError } from '../server.js';
 import * as zerodha from '../brokers/zerodha.js';
 import { setFeedAccount } from '../lib/feedRegistry.js';
 
+const orderPollers = new Map();
+const ORDER_POLL_MS = 3000;
+
+function writeSse(res, event, data) {
+  if (res.writableEnded) return false;
+  try {
+    if (event) res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function orderHash(orders) {
+  return JSON.stringify((orders || []).map((row) => ({
+    id: row.orderid || row.order_id || '',
+    symbol: row.tradingsymbol || '',
+    status: row.status || row.orderstatus || '',
+    qty: row.quantity || row.qty || '',
+    filled: row.filled_quantity || row.filledshares || '',
+    pending: row.pending_quantity || row.unfilledshares || '',
+    updated: row.updatetime || row.exchange_update_timestamp || row.order_timestamp || '',
+  })));
+}
+
+function getOrderPoller(userId) {
+  const key = String(userId || '').trim();
+  if (!key) return null;
+  if (orderPollers.has(key)) return orderPollers.get(key);
+
+  const poller = {
+    key,
+    clients: new Set(),
+    timer: null,
+    running: false,
+    lastHash: '',
+    lastOrders: [],
+    failures: 0,
+  };
+
+  async function poll({ force = false } = {}) {
+    if (poller.running) return;
+    poller.running = true;
+    try {
+      const out = await zerodha.orderBook({ userId: key });
+      const orders = out.orders || [];
+      const nextHash = orderHash(orders);
+      const changed = force || nextHash !== poller.lastHash;
+      poller.lastHash = nextHash;
+      poller.lastOrders = orders;
+      poller.failures = 0;
+      if (changed) {
+        for (const client of poller.clients) {
+          writeSse(client.res, 'orders', {
+            status: true,
+            broker: 'zerodha',
+            account: key,
+            orders,
+            at: Date.now(),
+          });
+        }
+      }
+    } catch (err) {
+      poller.failures += 1;
+      const status = err?.status || 500;
+      for (const client of poller.clients) {
+        writeSse(client.res, status === 429 ? 'rate-limit' : 'error', {
+          status: false,
+          broker: 'zerodha',
+          account: key,
+          message: err.message || 'Zerodha order stream failed',
+          at: Date.now(),
+        });
+      }
+    } finally {
+      poller.running = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    if (poller.timer) clearTimeout(poller.timer);
+    if (!poller.clients.size) {
+      orderPollers.delete(key);
+      return;
+    }
+    const wait = poller.failures > 0 ? Math.min(15000, ORDER_POLL_MS * (poller.failures + 1)) : ORDER_POLL_MS;
+    poller.timer = setTimeout(() => poll(), wait);
+  }
+
+  poller.add = (res) => {
+    const client = { res };
+    poller.clients.add(client);
+    writeSse(res, 'status', {
+      status: true,
+      broker: 'zerodha',
+      account: key,
+      message: 'Order stream connected',
+      pollMs: ORDER_POLL_MS,
+      at: Date.now(),
+    });
+    if (poller.lastOrders.length) {
+      writeSse(res, 'orders', {
+        status: true,
+        broker: 'zerodha',
+        account: key,
+        orders: poller.lastOrders,
+        cached: true,
+        at: Date.now(),
+      });
+    }
+    poll({ force: !poller.lastHash });
+    return () => {
+      poller.clients.delete(client);
+      if (!poller.clients.size) schedule();
+    };
+  };
+  poller.refresh = () => poll({ force: true });
+
+  orderPollers.set(key, poller);
+  return poller;
+}
+
+function refreshOrderPoller(userId) {
+  const poller = orderPollers.get(String(userId || '').trim());
+  if (poller) poller.refresh();
+}
+
 route('POST', '/api/zerodha/auto-login', async (req) => {
   const b = await readJSON(req);
   try {
@@ -62,7 +191,35 @@ route('POST', '/api/zerodha/margins', async (req) => {
 
 route('POST', '/api/zerodha/place-basket', async (req) => {
   const b = await readJSON(req);
-  return zerodha.placeBasket({ client: b.client || {}, legs: b.legs || [] });
+  const out = await zerodha.placeBasket({ client: b.client || {}, legs: b.legs || [] });
+  refreshOrderPoller(out.session?.userId || b.client?.userId || b.client?.clientCode);
+  return out;
+});
+
+route('GET', '/api/zerodha/order-stream', async (req, res, { query }) => {
+  const userId = query.get('userId') || query.get('clientCode') || '';
+  if (!userId) throw new ApiError('Zerodha order stream needs userId', 400);
+  if (!zerodha.getSession(userId)) throw new ApiError('Zerodha session unavailable. Login from Broker Configuration first.', 401);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.write('retry: 3000\n\n');
+
+  const poller = getOrderPoller(userId);
+  const unsubscribe = poller.add(res);
+  const keepAlive = setInterval(() => {
+    if (!writeSse(res, 'ping', { at: Date.now() })) clearInterval(keepAlive);
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
+  return undefined;
 });
 
 async function handleCallback(req, res, { query }) {

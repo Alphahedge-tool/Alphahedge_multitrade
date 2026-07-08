@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Info, RefreshCw } from 'lucide-react'
 import { apiGet } from '../config/api'
-import { buildClient, getSavedSession, isAngelBroker, saveSession } from '../feedmaster/feedMasterStore'
+import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore'
 import { compactProductTag, parseTradingSymbol } from './symbolParse'
 import { CompactSelect } from './PositionSelect'
 import './tradepanel.css'
@@ -32,11 +32,13 @@ export default function GetOrderBook() {
   const [status, setStatus] = useState('Select a user and account')
   const [loading, setLoading] = useState(false)
   const [configLoading, setConfigLoading] = useState(false)
+  const [streamStatus, setStreamStatus] = useState('')
   const autoLoadedAccountRef = useRef('')
 
   const selectedConfig = configs.find((config) => String(config.id) === String(configId))
   const selectedBrokerName = selectedConfig?.broker_name || ''
   const selectedIsAngel = isAngelBroker(selectedBrokerName)
+  const selectedIsZerodha = isZerodhaBroker(selectedBrokerName)
 
   useEffect(() => {
     let cancelled = false
@@ -102,7 +104,7 @@ export default function GetOrderBook() {
       setClient(null)
       if (!configId) return
 
-      if (!selectedIsAngel) {
+      if (!selectedIsAngel && !selectedIsZerodha) {
         setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
         return
       }
@@ -113,12 +115,17 @@ export default function GetOrderBook() {
         if (cancelled) return
         const config = res.data || {}
         const nextClient = buildClient(config, getSavedSession(configId))
-        if (!nextClient?.clientCode || !nextClient?.apiKey || !nextClient?.pin || !nextClient?.totpSecret) {
+        if (selectedIsAngel && (!nextClient?.clientCode || !nextClient?.apiKey || !nextClient?.pin || !nextClient?.totpSecret)) {
           setStatus('This Angel account is missing Client Code / PIN / TOTP / API Key')
           return
         }
+        if (selectedIsZerodha && (!nextClient?.apiKey || !nextClient?.apiSecret)) {
+          setStatus('This Zerodha account is missing API Key / API Secret')
+          return
+        }
         setClient(nextClient)
-        setStatus(nextClient.session?.jwtToken ? '' : 'This account is not logged in. Login from Broker Configuration first.')
+        const loggedIn = selectedIsAngel ? nextClient.session?.jwtToken : nextClient.session?.accessToken
+        setStatus(loggedIn ? '' : 'This account is not logged in. Login from Broker Configuration first.')
       } catch {
         if (!cancelled) setStatus('Failed to load account credentials')
       }
@@ -126,7 +133,7 @@ export default function GetOrderBook() {
 
     hydrateConfig()
     return () => { cancelled = true }
-  }, [configId, selectedBrokerName, selectedIsAngel])
+  }, [configId, selectedBrokerName, selectedIsAngel, selectedIsZerodha])
 
   useEffect(() => {
     autoLoadedAccountRef.current = ''
@@ -137,7 +144,7 @@ export default function GetOrderBook() {
       setStatus('Select an account first')
       return
     }
-    if (!selectedIsAngel) {
+    if (!selectedIsAngel && !selectedIsZerodha) {
       setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
       return
     }
@@ -145,7 +152,8 @@ export default function GetOrderBook() {
       setStatus('Angel account credentials are not ready')
       return
     }
-    if (!client.session?.jwtToken) {
+    const loggedIn = selectedIsAngel ? client.session?.jwtToken : client.session?.accessToken
+    if (!loggedIn) {
       setStatus('This account is not logged in. Login from Broker Configuration first.')
       return
     }
@@ -153,14 +161,14 @@ export default function GetOrderBook() {
     setLoading(true)
     setStatus('Loading orderbook...')
     try {
-      const res = await fetch('/api/angel/order-book', {
+      const res = await fetch(selectedIsZerodha ? '/api/zerodha/order-book' : '/api/angel/order-book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`)
-      if (body.session?.jwtToken) {
+      if (body.session?.jwtToken || body.session?.accessToken) {
         saveSession(configId, body.session)
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current))
       }
@@ -172,15 +180,78 @@ export default function GetOrderBook() {
     } finally {
       setLoading(false)
     }
-  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel])
+  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel, selectedIsZerodha])
 
   useEffect(() => {
     const accountKey = String(configId || '')
-    if (!accountKey || !selectedConfig || !selectedIsAngel || !client?.session?.jwtToken || loading) return
+    const loggedIn = selectedIsAngel ? client?.session?.jwtToken : client?.session?.accessToken
+    if (!accountKey || !selectedConfig || (!selectedIsAngel && !selectedIsZerodha) || !loggedIn || loading) return
     if (autoLoadedAccountRef.current === accountKey) return
     autoLoadedAccountRef.current = accountKey
     load()
-  }, [client, configId, load, loading, selectedConfig, selectedIsAngel])
+  }, [client, configId, load, loading, selectedConfig, selectedIsAngel, selectedIsZerodha])
+
+  useEffect(() => {
+    if (!selectedIsZerodha || !client?.session?.accessToken) {
+      setStreamStatus('')
+      return undefined
+    }
+    const userIdForStream = client.session.userId || client.userId || client.clientCode
+    if (!userIdForStream) {
+      setStreamStatus('')
+      return undefined
+    }
+
+    let closed = false
+    const stream = new EventSource(`/api/zerodha/order-stream?userId=${encodeURIComponent(userIdForStream)}`)
+    setStreamStatus('Live order stream connecting')
+
+    const handleOrders = (event) => {
+      if (closed) return
+      try {
+        const body = JSON.parse(event.data || '{}')
+        const orders = body.orders || []
+        setRows(orders)
+        setStatus(orders.length ? `${orders.length} orders` : 'No orders found')
+        setStreamStatus(body.cached ? 'Live order stream cached' : 'Live order stream active')
+      } catch {
+        setStreamStatus('Live order stream parse failed')
+      }
+    }
+
+    const handleStatus = (event) => {
+      if (closed) return
+      try {
+        const body = JSON.parse(event.data || '{}')
+        setStreamStatus(body.message || 'Live order stream active')
+      } catch {
+        setStreamStatus('Live order stream active')
+      }
+    }
+
+    const handleErrorEvent = (event) => {
+      if (closed) return
+      try {
+        const body = JSON.parse(event.data || '{}')
+        setStreamStatus(body.message || 'Live order stream error')
+      } catch {
+        setStreamStatus('Live order stream error')
+      }
+    }
+
+    stream.addEventListener('orders', handleOrders)
+    stream.addEventListener('status', handleStatus)
+    stream.addEventListener('rate-limit', handleErrorEvent)
+    stream.addEventListener('error', handleErrorEvent)
+    stream.onerror = () => {
+      if (!closed) setStreamStatus('Live order stream reconnecting')
+    }
+
+    return () => {
+      closed = true
+      stream.close()
+    }
+  }, [client?.clientCode, client?.session?.accessToken, client?.session?.userId, selectedIsZerodha])
 
   const summary = useMemo(() => {
     const complete = rows.filter((row) => /complete|traded|executed/i.test(String(orderStatus(row)))).length
@@ -214,11 +285,12 @@ export default function GetOrderBook() {
             }))}
           />
 
-          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsAngel && !client)} type="button">
+          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
             {loading ? 'Loading' : 'Get Orderbook'}
           </button>
           {rows.length > 0 && <span className="positions-total up">{rows.length} Orders</span>}
           {status && <span className="positions-status">{status}</span>}
+          {streamStatus && <span className="positions-status">{streamStatus}</span>}
         </div>
 
         {rows.length > 0 && (
@@ -270,7 +342,7 @@ export default function GetOrderBook() {
                         className="positions-empty-action"
                         type="button"
                         onClick={load}
-                        disabled={loading || !selectedConfig || (selectedIsAngel && !client)}
+                        disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
                       >
                         {loading ? <RefreshCw className="spin" size={18} /> : <Info size={18} />}
                       </button>

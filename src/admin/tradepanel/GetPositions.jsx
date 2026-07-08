@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { ArrowUpDown, Check, Filter, Info, Layers, X } from 'lucide-react';
 import { apiGet, apiPost } from '../config/api';
-import { getSavedSession, isAngelBroker, saveSession } from '../feedmaster/feedMasterStore';
+import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore';
 import { compactProductTag, parseTradingSymbol } from './symbolParse';
 import { CompactSelect, PositionSelect } from './PositionSelect';
 import './tradepanel.css';
@@ -66,6 +66,7 @@ export default function GetPositions() {
     : '';
   const selectedBrokerName = selectedConfig?.broker_name || '';
   const selectedIsAngel = isAngelBroker(selectedBrokerName);
+  const selectedIsZerodha = isZerodhaBroker(selectedBrokerName);
 
   useEffect(() => {
     let cancelled = false;
@@ -148,7 +149,7 @@ export default function GetPositions() {
       setClient(null);
       if (!configId) return;
 
-      if (!selectedIsAngel) {
+      if (!selectedIsAngel && !selectedIsZerodha) {
         setStatus(`${selectedBrokerName || 'Selected broker'} positions are not wired yet`);
         return;
       }
@@ -159,13 +160,17 @@ export default function GetPositions() {
         if (cancelled) return;
 
         const c = res.data || {};
-        if (!c.account_id || !c.app_key || !c.pin || !c.totp_secret) {
+        if (selectedIsAngel && (!c.account_id || !c.app_key || !c.pin || !c.totp_secret)) {
           setStatus('This Angel account is missing Client Code / PIN / TOTP / API Key');
+          return;
+        }
+        if (selectedIsZerodha && (!c.app_key || !c.app_secret)) {
+          setStatus('This Zerodha account is missing API Key / API Secret');
           return;
         }
 
         const session = getSavedSession(configId);
-        setClient({
+        const nextClient = selectedIsZerodha ? buildClient(c, session) : {
           enabled: true,
           alias: `${selectedBrokerName} - ${c.account_id}`,
           clientCode: c.account_id,
@@ -174,8 +179,10 @@ export default function GetPositions() {
           totpSecret: c.totp_secret,
           loggedIn: !!session?.jwtToken,
           session,
-        });
-        setStatus(session?.jwtToken ? '' : 'This account is not logged in. Login from Broker Configuration first.');
+        };
+        setClient(nextClient);
+        const loggedIn = selectedIsAngel ? session?.jwtToken : session?.accessToken;
+        setStatus(loggedIn ? '' : 'This account is not logged in. Login from Broker Configuration first.');
       } catch {
         if (!cancelled) setStatus('Failed to load account credentials');
       }
@@ -185,7 +192,7 @@ export default function GetPositions() {
     return () => {
       cancelled = true;
     };
-  }, [configId, selectedBrokerName, selectedIsAngel]);
+  }, [configId, selectedBrokerName, selectedIsAngel, selectedIsZerodha]);
 
   useEffect(() => {
     autoLoadedAccountRef.current = '';
@@ -196,7 +203,7 @@ export default function GetPositions() {
       setStatus('Select an account first');
       return;
     }
-    if (!selectedIsAngel) {
+    if (!selectedIsAngel && !selectedIsZerodha) {
       setStatus(`${selectedBrokerName || 'Selected broker'} positions are not wired yet`);
       return;
     }
@@ -204,21 +211,22 @@ export default function GetPositions() {
       setStatus('Angel account credentials are not ready');
       return;
     }
-    if (!client.session?.jwtToken) {
+    const loggedIn = selectedIsAngel ? client.session?.jwtToken : client.session?.accessToken;
+    if (!loggedIn) {
       setStatus('This account is not logged in. Login from Broker Configuration first.');
       return;
     }
     setLoading(true);
     setStatus('Loading positions...');
     try {
-      const res = await fetch('/api/angel/positions', {
+      const res = await fetch(selectedIsZerodha ? '/api/zerodha/positions' : '/api/angel/positions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
-      if (body.session?.jwtToken) {
+      if (body.session?.jwtToken || body.session?.accessToken) {
         saveSession(configId, body.session);
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current));
       }
@@ -230,16 +238,17 @@ export default function GetPositions() {
     } finally {
       setLoading(false);
     }
-  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel]);
+  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel, selectedIsZerodha]);
 
   useEffect(() => {
     const accountKey = String(configId || '');
-    if (!accountKey || !selectedConfig || !selectedIsAngel || !client?.session?.jwtToken || loading) return;
+    const loggedIn = selectedIsAngel ? client?.session?.jwtToken : client?.session?.accessToken;
+    if (!accountKey || !selectedConfig || (!selectedIsAngel && !selectedIsZerodha) || !loggedIn || loading) return;
     if (autoLoadedAccountRef.current === accountKey) return;
 
     autoLoadedAccountRef.current = accountKey;
     load();
-  }, [client, configId, load, loading, selectedConfig, selectedIsAngel]);
+  }, [client, configId, load, loading, selectedConfig, selectedIsAngel, selectedIsZerodha]);
 
   const totalPnl = rows.reduce((sum, r) => sum + pnlOf(r), 0);
   const longCount = rows.filter((row) => Number(row.netqty || 0) > 0).length;
@@ -382,7 +391,7 @@ export default function GetPositions() {
             }))}
           />
 
-          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsAngel && !client)} type="button">
+          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
             {loading ? 'Loading' : 'Get Positions'}
           </button>
           {rows.length > 0 && (
@@ -500,7 +509,7 @@ export default function GetPositions() {
                         className="positions-empty-action"
                         type="button"
                         onClick={load}
-                        disabled={loading || !selectedConfig || (selectedIsAngel && !client)}
+                        disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
                       >
                         <Info size={18} />
                       </button>

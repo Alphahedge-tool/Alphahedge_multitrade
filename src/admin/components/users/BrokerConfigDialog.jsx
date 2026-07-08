@@ -5,7 +5,7 @@ import {
 } from '@mui/material'
 import { Pencil, PlugZap, Plus, Trash2 } from 'lucide-react'
 import { apiGet, apiPost, brokerAutoLogin } from '../../config/api'
-import { openBrokerOAuthPopup } from '../../feedmaster/feedMasterStore'
+import { openBrokerOAuthPopup, saveSession } from '../../feedmaster/feedMasterStore'
 
 // Per-broker credential field schemas. All 5 brokers supported. account_id maps
 // to broker_accounts.client_code, app_key -> api_key, app_secret -> api_secret.
@@ -158,6 +158,7 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
       else if (res.needsLogin) onToast?.(`${BROKERS.find((b) => b.apiPath === path)?.label || c.broker_name} needs browser login`)
       else {
         onToast?.(`${c.broker_name} logged in — ${res.sessionSource || 'live'}`)
+        if (res.session) saveSession(c.id, res.session)
         // Upstox resolves the real user_id on login and saves it to account_id;
         // refresh this user's configs so the UI shows the updated account id.
         if (res.clientCode && res.clientCode !== c.account_id) { await load(); onChanged?.() }
