@@ -1,9 +1,31 @@
 @import "tailwindcss";
 
 /* ─────────────────────────────────────────────────────────────
-   Angel One design system — Roboto + brand tokens
-   Mirrors the production token names so this feels native.
+   Kite-style design system — Open Sans + Zerodha Kite palette
+   mapped onto the app's --ao-* token names.
    ───────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/opensans/v44/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsiH0B4gaVc.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/opensans/v44/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/opensans/v44/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsgH1x4gaVc.ttf") format("truetype");
+}
 
 @font-face {
   font-family: "Roboto";
@@ -30,42 +52,42 @@
 :root {
   color-scheme: light;
 
-  /* Brand */
-  --ao-blue: #3F5BD9;
-  --ao-blue-hover: #354CB5;
-  --ao-blue-pressed: #202E6D;
-  --ao-blue-surface: #E8ECFC;
-  --ao-blue-bg: #F1F4FD;
+  /* Brand — Kite palette */
+  --ao-blue: #4184F3;
+  --ao-blue-hover: #2E6FE0;
+  --ao-blue-pressed: #1F5BC7;
+  --ao-blue-surface: #ECF3FE;
+  --ao-blue-bg: #F4F8FE;
 
-  --ao-green: #008F75;
-  --ao-green-surface: #E0F0E8;
-  --ao-green-bg: #F0FAF5;
-  --ao-up-bg: #E4F6F5;
+  --ao-green: #4CAF50;
+  --ao-green-surface: #EBF8F2;
+  --ao-green-bg: #F3FAF4;
+  --ao-up-bg: #EBF8F2;
 
-  --ao-red: #D64D4D;
-  --ao-red-surface: #FFECEC;
-  --ao-red-bg: #FFF2F2;
-  --ao-down-bg: #FDEBEA;
+  --ao-red: #DF514C;
+  --ao-red-surface: #FEF0EF;
+  --ao-red-bg: #FDF3F2;
+  --ao-down-bg: #FEF0EF;
 
-  --ao-purple: #581DBE;
-  --ao-purple-surface: #EDE3FC;
-  --ao-gold: #FF9933;
-  --ao-yellow: #F9BA4D;
-  --ao-cyan: #21C7DB;
+  --ao-purple: #844AEB;
+  --ao-purple-surface: #F3EDFD;
+  --ao-gold: #FF8F00;
+  --ao-yellow: #FFBF00;
+  --ao-cyan: #00B0FF;
 
-  /* Neutrals */
-  --ao-bold: #253040;
-  --ao-base: #425061;
-  --ao-muted: #A2A8B4;
-  --ao-caption: #717A89;
-  --ao-placeholder: #959FB0;
+  /* Neutrals — Kite grays */
+  --ao-bold: #333333;
+  --ao-base: #444444;
+  --ao-muted: #B7B7B7;
+  --ao-caption: #9B9B9B;
+  --ao-placeholder: #C6C6C6;
 
-  --ao-bg: #F5F7FA;          /* page */
+  --ao-bg: #F8F8F8;          /* page */
   --ao-surface: #FFFFFF;     /* cards */
-  --ao-surface-2: #F1F4FD;   /* subtle fill */
-  --ao-hover: #F5F7FA;
-  --ao-border: #DDDFE4;
-  --ao-border-soft: #EAEBF1;
+  --ao-surface-2: #F4F4F4;   /* subtle fill */
+  --ao-hover: #F6F6F6;
+  --ao-border: #E0E0E0;
+  --ao-border-soft: #F1F1F1;
 
   /* Type scale */
   --fs-xxs: 0.625rem;
@@ -76,35 +98,34 @@
   --fs-xl: 1.0625rem;
   --fs-xxl: 1.1875rem;
 
-  --shadow-card: 0 1px 2px rgba(43, 47, 63, .06), 0 4px 16px rgba(43, 47, 63, .06);
-  --shadow-pop: 0 4px 24px rgba(0, 0, 0, .12);
-  --radius: 10px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .04), 0 3px 10px rgba(0, 0, 0, .04);
+  --shadow-pop: 0 4px 20px rgba(0, 0, 0, .12);
+  --radius: 4px;
 
-  /* ── Angel One real design tokens (subset used by the Basket panel) ──
-     Lifted from Angel's production stylesheet so the basket maps to their
-     genuine --color-* names. Light values; see .dark-mode-theme for dark. */
+  /* ── Legacy --color-* token names (subset used by the Basket panel) ──
+     Kept for compatibility; values remapped to the Kite palette. */
   --color-neutral-background: #ffffff;
-  --color-neutral-background-grey: #F1F4FD;
-  --color-neutral-background-hover: #F5F7FA;
-  --color-border-grey: #DDDFE4;
-  --color-neutral-border: #EAEBF1;
-  --color-text-bold: #253040;
-  --color-text-base: #425061;
-  --color-neutral-caption: #717A89;
-  --color-text-muted: #A2A8B4;
-  --color-neutral-placeholder: #959FB0;
-  --color-text-blue: #3F5BD9;
-  --color-text-blue-hover: #354CB5;
-  --color-surface-primary: #E8ECFC;
-  --color-background-primary: #F1F4FD;
-  --color-success-main: #008F75;
-  --color-background-success: #F0FAF5;
-  --color-error-main: #D64D4D;
-  --color-background-error: #FFF2F2;
-  --color-icon-gold: #FF9933;
-  --color-text-secondary: #581DBE;
-  --color-surface-secondary: #EDE3FC;
-  --color-basket-shadow: 6px 6px 28px 0px rgba(43, 47, 63, .1);
+  --color-neutral-background-grey: #F4F4F4;
+  --color-neutral-background-hover: #F6F6F6;
+  --color-border-grey: #E0E0E0;
+  --color-neutral-border: #F1F1F1;
+  --color-text-bold: #333333;
+  --color-text-base: #444444;
+  --color-neutral-caption: #9B9B9B;
+  --color-text-muted: #B7B7B7;
+  --color-neutral-placeholder: #C6C6C6;
+  --color-text-blue: #4184F3;
+  --color-text-blue-hover: #2E6FE0;
+  --color-surface-primary: #ECF3FE;
+  --color-background-primary: #F4F8FE;
+  --color-success-main: #4CAF50;
+  --color-background-success: #F3FAF4;
+  --color-error-main: #DF514C;
+  --color-background-error: #FDF3F2;
+  --color-icon-gold: #FF8F00;
+  --color-text-secondary: #844AEB;
+  --color-surface-secondary: #F3EDFD;
+  --color-basket-shadow: 6px 6px 28px 0px rgba(0, 0, 0, .08);
 
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -119,7 +140,7 @@ body {
   overflow: hidden;
   background: var(--ao-bg);
   color: var(--ao-base);
-  font-family: Roboto, ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif;
   font-size: var(--fs-base);
   line-height: 1.45;
 }
@@ -1909,30 +1930,30 @@ select { min-width: 96px; }
 .basket-panel {
   /* Angel One real palette (light). Maps app tokens → Angel --color-* values. */
   --ao-surface: var(--color-neutral-background, #ffffff);
-  --ao-surface-2: var(--color-neutral-background-grey, #F1F4FD);
-  --ao-hover: var(--color-neutral-background-hover, #F5F7FA);
-  --ao-border: var(--color-border-grey, #DDDFE4);
-  --ao-border-soft: var(--color-neutral-border, #EAEBF1);
-  --ao-bold: var(--color-text-bold, #253040);
-  --ao-base: var(--color-text-base, #425061);
-  --ao-caption: var(--color-neutral-caption, #717A89);
-  --ao-muted: var(--color-text-muted, #A2A8B4);
-  --ao-placeholder: var(--color-neutral-placeholder, #959FB0);
-  --ao-blue: var(--color-text-blue, #3F5BD9);
-  --ao-blue-hover: var(--color-text-blue-hover, #354CB5);
-  --ao-blue-surface: var(--color-surface-primary, #E8ECFC);
-  --ao-blue-bg: var(--color-background-primary, #F1F4FD);
-  --ao-green: var(--color-success-main, #008F75);
-  --ao-green-bg: var(--color-background-success, #F0FAF5);
-  --ao-red: var(--color-error-main, #D64D4D);
-  --ao-red-bg: var(--color-background-error, #FFF2F2);
-  --ao-gold: var(--color-icon-gold, #FF9933);
-  --ao-purple: var(--color-text-secondary, #581DBE);
-  --ao-purple-surface: var(--color-surface-secondary, #EDE3FC);
-  --shadow-card: var(--color-basket-shadow, 6px 6px 28px 0 rgba(43,47,63,.1));
+  --ao-surface-2: var(--color-neutral-background-grey, #F4F4F4);
+  --ao-hover: var(--color-neutral-background-hover, #F6F6F6);
+  --ao-border: var(--color-border-grey, #E0E0E0);
+  --ao-border-soft: var(--color-neutral-border, #F1F1F1);
+  --ao-bold: var(--color-text-bold, #333333);
+  --ao-base: var(--color-text-base, #444444);
+  --ao-caption: var(--color-neutral-caption, #9B9B9B);
+  --ao-muted: var(--color-text-muted, #B7B7B7);
+  --ao-placeholder: var(--color-neutral-placeholder, #C6C6C6);
+  --ao-blue: var(--color-text-blue, #4184F3);
+  --ao-blue-hover: var(--color-text-blue-hover, #2E6FE0);
+  --ao-blue-surface: var(--color-surface-primary, #ECF3FE);
+  --ao-blue-bg: var(--color-background-primary, #F4F8FE);
+  --ao-green: var(--color-success-main, #4CAF50);
+  --ao-green-bg: var(--color-background-success, #F3FAF4);
+  --ao-red: var(--color-error-main, #DF514C);
+  --ao-red-bg: var(--color-background-error, #FDF3F2);
+  --ao-gold: var(--color-icon-gold, #FF8F00);
+  --ao-purple: var(--color-text-secondary, #844AEB);
+  --ao-purple-surface: var(--color-surface-secondary, #F3EDFD);
+  --shadow-card: var(--color-basket-shadow, 6px 6px 28px 0 rgba(0,0,0,.08));
 
   /* Angel uses Roboto across the app. */
-  font-family: Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
 
   --basket-cols: 26px minmax(120px, 1.4fr) 56px 116px 100px 64px 70px 96px minmax(110px, 130px);
   display: grid;
@@ -2026,7 +2047,7 @@ select { min-width: 96px; }
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(43, 47, 63, .18);
   overflow: hidden;
-  font-family: Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
 }
 .basket-search-tabs { display: flex; gap: 2px; padding: 6px 8px; border-bottom: 1px solid #EAEBF1; background: #F7F9FE; }
 .basket-search-tabs button {

@@ -2,14 +2,14 @@
 // Angel One is wired today; other brokers can be selected and added later.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUpDown, Check, Filter, Info, Layers, X } from 'lucide-react';
+import { Activity, ArrowUpDown, Check, Download, Filter, Flame, Info, Layers, Search, Settings2, X } from 'lucide-react';
 import { apiGet, apiPost } from '../config/api';
 import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore';
-import { compactProductTag, parseTradingSymbol } from './symbolParse';
+import { bookProductTag, parseTradingSymbol } from './symbolParse';
 import { CompactSelect, PositionSelect } from './PositionSelect';
 import './tradepanel.css';
 
-const POSITION_COLUMNS = ['stock', 'product', 'netQty', 'buyAvg', 'sellAvg', 'ltp', 'pnl'];
+const POSITION_COLUMNS = ['select', 'product', 'instrument', 'qty', 'avg', 'ltp', 'pnl', 'chg'];
 
 const defaultPositionFilters = {
   symbol: '',
@@ -30,6 +30,12 @@ function money(v) {
   return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Kite prefixes gains with an explicit "+" in the P&L column.
+function signedMoney(v) {
+  const n = Number(v || 0);
+  return `${n > 0 ? '+' : ''}${money(n)}`;
+}
+
 // Angel returns pnl on some payloads; otherwise derive from realised+unrealised.
 function pnlOf(row) {
   if (row.pnl != null && row.pnl !== '') return Number(row.pnl);
@@ -46,7 +52,7 @@ export default function GetPositions() {
   const [status, setStatus] = useState('Select a user and account');
   const [loading, setLoading] = useState(false);
   const [configLoading, setConfigLoading] = useState(false);
-  const [sort, setSort] = useState({ key: 'stock', dir: 'asc' });
+  const [sort, setSort] = useState({ key: 'instrument', dir: 'asc' });
   const [filters, setFilters] = useState(defaultPositionFilters);
   const [openFilter, setOpenFilter] = useState('');
   const [selectedPositionKeys, setSelectedPositionKeys] = useState(() => new Set());
@@ -255,12 +261,7 @@ export default function GetPositions() {
   const shortCount = rows.filter((row) => Number(row.netqty || 0) < 0).length;
   const filterOptions = useMemo(() => buildFilterOptions(rows), [rows]);
   const visibleRows = useMemo(() => sortPositionRows(filterPositionRows(rows, filters), sort), [rows, filters, sort]);
-  const tableRows = useMemo(
-    () => (sort.key === 'stock'
-      ? groupPositionsByExpiryAndExchange(visibleRows)
-      : visibleRows.map((row) => ({ type: 'row', row }))),
-    [visibleRows, sort.key],
-  );
+  const tableRows = useMemo(() => visibleRows.map((row) => ({ type: 'row', row })), [visibleRows]);
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const togglePositionSelection = useCallback((key) => {
     setSelectedPositionKeys((current) => {
@@ -367,8 +368,29 @@ export default function GetPositions() {
 
   return (
     <div className="trade-panel">
-      <div className="positions-view">
-        <div className="positions-toolbar">
+      <div className="positions-view positions-book-view">
+        <div className="positions-book-header">
+          <div className="positions-book-title">
+            <strong>Positions ({rows.length})</strong>
+            {status && <span>{status}</span>}
+          </div>
+          <div className="positions-book-actions">
+            <label className="positions-book-search">
+              <Search size={14} />
+              <input
+                value={filters.symbol}
+                onChange={(event) => setFilters((current) => ({ ...current, symbol: event.target.value }))}
+                placeholder="Search"
+              />
+            </label>
+            <button type="button" className="positions-book-tool analyze"><Flame size={13} /> Analyze</button>
+            <button type="button" className="positions-book-tool"><Activity size={13} /> Analytics</button>
+            <button type="button" className="positions-book-tool"><Settings2 size={13} /> Settings</button>
+            <button type="button" className="positions-book-tool"><Download size={13} /> Download</button>
+          </div>
+        </div>
+
+        <div className="positions-toolbar positions-book-accountbar">
           <CompactSelect
             title="User"
             value={userId}
@@ -394,17 +416,11 @@ export default function GetPositions() {
           <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
             {loading ? 'Loading' : 'Get Positions'}
           </button>
-          {rows.length > 0 && (
-            <span className={`positions-total ${totalPnl >= 0 ? 'up' : 'down'}`}>
-              Total P&amp;L: {money(totalPnl)}
-            </span>
-          )}
           {activeFilterCount > 0 && (
             <button className="positions-clear-filters" type="button" onClick={() => setFilters(defaultPositionFilters)}>
               <X size={14} /> Clear filters
             </button>
           )}
-          {status && <span className="positions-status">{status}</span>}
         </div>
 
         {selectedCount > 0 && (
@@ -423,32 +439,12 @@ export default function GetPositions() {
           </div>
         )}
 
-        {rows.length > 0 && (
-          <div className="position-book-summary">
-            <div>
-              <span className="buy">Long Positions</span>
-              <strong>{longCount}</strong>
-              <em>Net qty above zero</em>
-            </div>
-            <div>
-              <span className="sell">Short Positions</span>
-              <strong>{shortCount}</strong>
-              <em>Net qty below zero</em>
-            </div>
-            <div>
-              <span>Total P&amp;L</span>
-              <strong className={totalPnl >= 0 ? 'up' : 'down'}>{money(totalPnl)}</strong>
-              <em>{rows.length} Positions</em>
-            </div>
-          </div>
-        )}
-
-        <div className="positions-table-wrap">
+        <div className="positions-table-wrap positions-book-table-wrap">
           <table className="positions-table position-book-table">
             <thead>
               <tr>
                 {POSITION_COLUMNS.map((column) => (
-                  <th key={column} className={positionColumnIsNumeric(column) ? 'num' : ''}>
+                  <th key={column} className={`${positionColumnIsNumeric(column) ? 'num' : ''}${column === 'pnl' ? ' col-pnl' : ''}`}>
                     <PositionColumnHeader
                       column={column}
                       sort={sort}
@@ -464,31 +460,17 @@ export default function GetPositions() {
               </tr>
             </thead>
             <tbody>
-              {tableRows.map((item, i) => (
-                item.type === 'group' ? (
-                  <tr key={`group-${item.expiry}-${item.exchange}-${i}`} className="position-expiry-row">
-                    <td colSpan={POSITION_COLUMNS.length}>
-                      <div className="position-expiry-row-content">
-                        <span>{item.expiry}</span>
-                        <small>{item.exchange}</small>
-                        <small>{item.count} positions</small>
-                        <strong className={item.pnl >= 0 ? 'up' : 'down'}>
-                          Group P&amp;L: {money(item.pnl)}
-                        </strong>
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  (() => {
-                    const rowKey = positionRowKey(item.row, i);
-                    const selected = selectedPositionKeys.has(rowKey);
-                    return (
+              {tableRows.map((item, i) => {
+                const rowKey = positionRowKey(item.row, i);
+                const selected = selectedPositionKeys.has(rowKey);
+                const qty = Number(item.row.netqty || 0);
+                return (
                   <tr
                     key={rowKey}
-                    className={`${Number(item.row.netqty || 0) < 0 ? 'position-row-short' : ''}${selected ? ' position-row-selected' : ''}`}
+                    className={`${qty < 0 ? 'position-row-short' : ''}${qty === 0 ? ' position-row-closed' : ''}${selected ? ' position-row-selected' : ''}`}
                   >
                     {POSITION_COLUMNS.map((column) => (
-                      <td key={column} className={positionColumnIsNumeric(column) ? 'num' : ''}>
+                      <td key={column} className={`${positionColumnIsNumeric(column) ? 'num' : ''}${column === 'pnl' ? ' col-pnl' : ''}`}>
                         {renderPositionCell(item.row, column, {
                           selected,
                           rowKey,
@@ -497,10 +479,8 @@ export default function GetPositions() {
                       </td>
                     ))}
                   </tr>
-                    );
-                  })()
-                )
-              ))}
+                );
+              })}
               {rows.length === 0 && (
                 <tr>
                   <td className="positions-empty" colSpan={POSITION_COLUMNS.length}>
@@ -519,6 +499,15 @@ export default function GetPositions() {
                 </tr>
               )}
             </tbody>
+            {rows.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={6} className="positions-total-label">Total P&amp;L</td>
+                  <td className={`num ${totalPnl >= 0 ? 'up' : 'down'}`}>{money(totalPnl)}</td>
+                  <td className="positions-total-spacer" />
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
 
@@ -689,19 +678,20 @@ function positionRowKey(row, fallback = '') {
 
 function positionLabel(key) {
   const labels = {
-    stock: 'Stock Name',
-    product: 'Product Type',
-    netQty: 'Net Qty.',
-    buyAvg: 'Buy Avg',
-    sellAvg: 'Sell Avg',
+    select: '',
+    instrument: 'Instrument',
+    product: 'Product',
+    qty: 'Qty.',
+    avg: 'Avg.',
     ltp: 'LTP',
     pnl: 'P&L',
+    chg: 'Chg.',
   };
   return labels[key] || key;
 }
 
 function positionColumnIsNumeric(key) {
-  return ['netQty', 'buyAvg', 'sellAvg', 'ltp', 'pnl'].includes(key);
+  return ['qty', 'avg', 'ltp', 'pnl', 'chg'].includes(key);
 }
 
 function PositionColumnHeader({
@@ -717,6 +707,9 @@ function PositionColumnHeader({
   const active = columnFilterActive(column, filters);
   const sortActive = sort.key === column;
   const filterButtonRef = useRef(null);
+  if (column === 'select') {
+    return <span className="position-select-head" aria-hidden="true" />;
+  }
 
   const toggleSort = () => {
     setSort((current) => {
@@ -750,7 +743,7 @@ function PositionColumnHeader({
           setFilters={setFilters}
           filterOptions={filterOptions}
           anchorRef={filterButtonRef}
-          align={column === 'stock' ? 'left' : 'right'}
+          align={column === 'instrument' ? 'left' : 'right'}
           onClose={() => setOpenFilter('')}
         />
       )}
@@ -836,7 +829,7 @@ function PositionFilterMenu({ column, filters, setFilters, filterOptions, anchor
   let body = null;
   let reset = [];
 
-  if (column === 'stock') {
+  if (column === 'instrument') {
     reset = ['symbol', 'exchange', 'expiry', 'optionType'];
     body = (
       <>
@@ -857,16 +850,17 @@ function PositionFilterMenu({ column, filters, setFilters, filterOptions, anchor
         {select('Side', 'side', [{ value: 'long', label: 'Long' }, { value: 'short', label: 'Short' }])}
       </>
     );
-  } else if (column === 'netQty') {
+  } else if (column === 'qty') {
     reset = ['netQty'];
     body = select('Quantity', 'netQty', [
       { value: 'long', label: 'Long only' },
       { value: 'short', label: 'Short only' },
       { value: 'flat', label: 'Flat only' },
     ]);
-  } else if (['buyAvg', 'sellAvg', 'ltp'].includes(column)) {
-    reset = [column];
-    body = select('Value', column, [
+  } else if (['avg', 'ltp'].includes(column)) {
+    const key = column === 'avg' ? 'buyAvg' : column;
+    reset = [key];
+    body = select('Value', key, [
       { value: 'has', label: 'Has value' },
       { value: 'missing', label: 'Missing' },
     ]);
@@ -897,7 +891,7 @@ function PositionFilterMenu({ column, filters, setFilters, filterOptions, anchor
 }
 
 function columnFilterActive(column, filters) {
-  if (column === 'stock') return Boolean(filters.symbol || filters.exchange || filters.expiry || filters.optionType);
+  if (column === 'instrument') return Boolean(filters.symbol || filters.exchange || filters.expiry || filters.optionType);
   if (column === 'product') return Boolean(filters.product || filters.side);
   return Boolean(filters[column]);
 }
@@ -911,7 +905,7 @@ function buildFilterOptions(rows) {
     if (row.exchange) exchanges.add(String(row.exchange));
     const meta = positionExpiryMeta(row);
     if (meta.label && meta.label !== 'No Expiry') expiries.set(meta.label, meta.sort);
-    products.add(compactProductTag(row.producttype || row.product_type || '-'));
+    products.add(bookProductTag(row.producttype || row.product_type || '-'));
   }
 
   return {
@@ -935,7 +929,7 @@ function filterPositionRows(rows, filters) {
       row.exchange,
     ].filter(Boolean).join(' ').toLowerCase();
     const qty = Number(row.netqty || 0);
-    const product = compactProductTag(row.producttype || row.product_type || '-');
+    const product = bookProductTag(row.producttype || row.product_type || '-');
     const buyAvg = positionBuyAvg(row);
     const sellAvg = positionSellAvg(row);
     const ltp = positionValue(row, ['ltp', 'LTP', 'lasttradedprice']);
@@ -969,7 +963,7 @@ function sortPositionRows(rows, sort) {
 }
 
 function comparePositionRows(a, b, key) {
-  if (key === 'stock') {
+  if (key === 'instrument') {
     const ax = positionExpiryMeta(a);
     const bx = positionExpiryMeta(b);
     if (ax.sort !== bx.sort) return ax.sort - bx.sort;
@@ -980,59 +974,92 @@ function comparePositionRows(a, b, key) {
     return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
   }
   if (key === 'product') {
-    return compactProductTag(a.producttype || a.product_type || '-').localeCompare(compactProductTag(b.producttype || b.product_type || '-'));
+    return bookProductTag(a.producttype || a.product_type || '-').localeCompare(bookProductTag(b.producttype || b.product_type || '-'));
   }
-  if (key === 'netQty') return Number(a.netqty || 0) - Number(b.netqty || 0);
-  if (key === 'buyAvg') return positionBuyAvg(a) - positionBuyAvg(b);
-  if (key === 'sellAvg') return positionSellAvg(a) - positionSellAvg(b);
+  if (key === 'qty') return Number(a.netqty || 0) - Number(b.netqty || 0);
+  if (key === 'avg') return positionAvg(a) - positionAvg(b);
   if (key === 'ltp') return positionValue(a, ['ltp', 'LTP', 'lasttradedprice']) - positionValue(b, ['ltp', 'LTP', 'lasttradedprice']);
   if (key === 'pnl') return pnlOf(a) - pnlOf(b);
+  if (key === 'chg') return positionChangePct(a) - positionChangePct(b);
   return 0;
 }
 
 function renderPositionCell(row, column, selection = {}) {
-  if (column === 'stock') return <PositionStockCell row={row} selection={selection} />;
+  if (column === 'select') return <PositionCheckCell row={row} selection={selection} />;
+  if (column === 'instrument') return <PositionInstrumentCell row={row} />;
   if (column === 'product') return <PositionProductCell row={row} />;
-  if (column === 'netQty') return <PositionQtyCell row={row} />;
-  if (column === 'buyAvg') return <PositionPriceCell value={positionBuyAvg(row)} />;
-  if (column === 'sellAvg') return <PositionPriceCell value={positionSellAvg(row)} />;
+  if (column === 'qty') return <PositionQtyCell row={row} />;
+  if (column === 'avg') return <PositionPriceCell value={positionAvg(row)} />;
   if (column === 'ltp') return <PositionPriceCell value={positionValue(row, ['ltp', 'LTP', 'lasttradedprice'])} strong />;
   if (column === 'pnl') return <PositionPnlCell row={row} />;
+  if (column === 'chg') return <PositionChangeCell row={row} />;
   return '-';
 }
 
-function PositionStockCell({ row, selection }) {
+function PositionCheckCell({ row, selection }) {
+  const symbol = String(row.tradingsymbol || row.symbolname || row.symbol || '-');
+  return (
+    <button
+      className={`position-row-check${selection.selected ? ' checked' : ''}`}
+      type="button"
+      aria-pressed={selection.selected}
+      aria-label={`${selection.selected ? 'Unselect' : 'Select'} ${symbol}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        selection.onToggle?.(selection.rowKey);
+      }}
+    >
+      {selection.selected && <Check size={12} strokeWidth={3} />}
+    </button>
+  );
+}
+
+// Kite-style instrument line: "SENSEX 9th JUL 74100 PE" with the expiry-day
+// ordinal superscripted and the exchange as a small muted suffix.
+function PositionInstrumentCell({ row }) {
   const symbol = String(row.tradingsymbol || row.symbolname || row.symbol || '-');
   const parsed = parseTradingSymbol(symbol);
+  const expiry = splitExpiryDay(parsed.expiry);
   return (
     <div className="position-symbol-line" title={symbol}>
-      <button
-        className={`position-row-check${selection.selected ? ' checked' : ''}`}
-        type="button"
-        aria-pressed={selection.selected}
-        aria-label={`${selection.selected ? 'Unselect' : 'Select'} ${symbol}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          selection.onToggle?.(selection.rowKey);
-        }}
-      >
-        {selection.selected && <Check size={12} strokeWidth={3} />}
-      </button>
-      <strong>{parsed.root}</strong>
-      {parsed.expiry && <span className="position-expiry">{parsed.expiry}</span>}
-      {parsed.strike && <span className="position-strike">{parsed.strike}</span>}
-      {parsed.optionType && <span className={`book-tag option ${parsed.optionType.toLowerCase()}`}>{parsed.optionType}</span>}
-      {row.exchange && <span className="book-tag exchange">{row.exchange}</span>}
+      <span className="position-symbol-name">
+        {parsed.root || symbol}
+        {expiry
+          ? <> {expiry.day}<sup>{expiry.suffix}</sup> {expiry.month}</>
+          : (parsed.expiry ? ` ${parsed.expiry}` : '')}
+        {parsed.strike ? ` ${parsed.strike}` : ''}
+        {parsed.optionType ? ` ${parsed.optionType}` : ''}
+      </span>
+      {row.exchange && <span className="position-symbol-exchange">{row.exchange}</span>}
     </div>
   );
 }
 
+function splitExpiryDay(expiry) {
+  const match = String(expiry || '').match(/^(\d{1,2})\s+([A-Za-z]{3})/);
+  if (!match) return null;
+  const day = Number(match[1]);
+  return { day, suffix: ordinalSuffix(day), month: match[2].toUpperCase() };
+}
+
+function ordinalSuffix(day) {
+  if (day % 100 >= 11 && day % 100 <= 13) return 'th';
+  return { 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] || 'th';
+}
+
+function PositionChangeCell({ row }) {
+  const pct = positionChangePct(row);
+  return (
+    <span className={`position-change-value ${pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat'}`}>
+      {Number.isFinite(pct) ? `${pct.toFixed(2)}%` : '-'}
+    </span>
+  );
+}
+
 function PositionProductCell({ row }) {
-  const product = compactProductTag(row.producttype || row.product_type || '-');
-  const qty = Number(row.netqty || 0);
+  const product = bookProductTag(row.producttype || row.product_type || '-');
   return (
     <div className="book-product-cell">
-      {qty !== 0 && <span className={`book-tag side ${qty > 0 ? 'buy' : 'sell'}`}>{qty > 0 ? 'LONG' : 'SHORT'}</span>}
       <span className="book-tag product">{product}</span>
     </div>
   );
@@ -1058,8 +1085,8 @@ function PositionQtyCell({ row }) {
 function PositionPnlCell({ row }) {
   const pnl = pnlOf(row);
   return (
-    <span className={`position-pnl-value ${pnl >= 0 ? 'up' : 'down'}`}>
-      {money(pnl)}
+    <span className={`position-pnl-value ${pnl > 0 ? 'up' : pnl < 0 ? 'down' : 'flat'}`}>
+      {signedMoney(pnl)}
     </span>
   );
 }
@@ -1156,6 +1183,30 @@ function positionSellAvg(row) {
     'cfSellQty',
   ]));
   return amount && qty ? amount / qty : 0;
+}
+
+function positionAvg(row) {
+  const qty = Number(row.netqty || 0);
+  if (qty < 0) return positionSellAvg(row);
+  return positionBuyAvg(row);
+}
+
+function positionChangePct(row) {
+  const direct = positionValue(row, [
+    'changepercent',
+    'changePercent',
+    'change_pct',
+    'changePct',
+    'pnlpercentage',
+    'pnlPercentage',
+    'pnl_pct',
+  ]);
+  if (direct) return direct;
+  const avg = positionAvg(row);
+  const ltp = positionValue(row, ['ltp', 'LTP', 'lasttradedprice']);
+  if (!avg || !Number.isFinite(avg) || !Number.isFinite(ltp)) return 0;
+  const raw = ((ltp - avg) / Math.abs(avg)) * 100;
+  return Number.isFinite(raw) ? raw : 0;
 }
 
 function expirySortValue(label) {

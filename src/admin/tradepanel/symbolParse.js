@@ -9,6 +9,15 @@ export function compactProductTag(value) {
   return product;
 }
 
+// Broker-style product label (Kite naming): NRML / MIS / CNC.
+export function bookProductTag(value) {
+  const product = String(value || '-').toUpperCase();
+  if (product === 'CARRYFORWARD') return 'NRML';
+  if (product === 'INTRADAY') return 'MIS';
+  if (product === 'DELIVERY') return 'CNC';
+  return product;
+}
+
 function inferOptionType(symbol) {
   const text = String(symbol).toUpperCase();
   if (/\bCE\b|CE$/.test(text)) return 'CE';
