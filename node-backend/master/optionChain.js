@@ -11,9 +11,20 @@ import { canonicalSymbol } from './symbol.js';
 
 const UPSTOX_BASE = 'https://api.upstox.com/v2';
 
-// upstoxUnderlyingKey resolves the underlying's Upstox instrument_key for an
-// index/equity so we can call /v2/option/chain. Indices live under NSE_INDEX.
-function upstoxUnderlyingKey(symbol) {
+// upstoxUnderlyingKey resolves the underlying's Upstox instrument_key so we can
+// call /v2/option/chain.
+//   • Index / equity underlyings live under NSE_INDEX / BSE_INDEX (or NSE/BSE).
+//   • MCX commodities have NO index underlying — their options are written on a
+//     futures contract, so Upstox expects the matching-expiry FUTURE's key
+//     (e.g. MCX_FO|520702 for CRUDEOIL20JUL26FUT). The Angel chain already
+//     resolved that future as its spot, and MCX exchange token numbering is
+//     shared, so MCX_FO|<spotToken> is the correct underlying key.
+function upstoxUnderlyingKey(symbol, opts = {}) {
+  // MCX: build the FUT key from the chain's spot (the matching future) token.
+  if (String(opts.exchange || '').toUpperCase() === 'MCX' && opts.spotToken) {
+    return `MCX_FO|${String(opts.spotToken).replace(/^MCX_FO\|/i, '')}`;
+  }
+
   // Try the common index exchange first, then plain NSE equity.
   for (const ex of ['NSE_INDEX', 'NSE', 'BSE_INDEX', 'BSE']) {
     const row = resolve('upstox', symbol, ex);
@@ -33,8 +44,8 @@ function upstoxUnderlyingKey(symbol) {
 
 // fetchUpstoxChain calls Upstox's option chain for an underlying + expiry and
 // returns a map: strike -> { call:{bid,ask,bidQty,askQty,ltp,oi,greeks}, put:{...} }.
-async function fetchUpstoxChain({ symbol, expiryISO, accessToken }) {
-  const key = upstoxUnderlyingKey(symbol);
+async function fetchUpstoxChain({ symbol, expiryISO, accessToken, exchange, spotToken }) {
+  const key = upstoxUnderlyingKey(symbol, { exchange, spotToken });
   if (!key || !accessToken) return { byStrike: {}, source: key ? 'no-token' : 'no-key' };
 
   const url = `${UPSTOX_BASE}/option/chain?instrument_key=${encodeURIComponent(key)}&expiry_date=${expiryISO}`;
@@ -68,7 +79,10 @@ async function fetchUpstoxChain({ symbol, expiryISO, accessToken }) {
 // 25000); Upstox strikes are also ₹, so we match directly.
 export async function buildMergedChain({ angelChain, symbol, expiryISO, upstoxAccessToken }) {
   const strikes = angelChain?.strikes || [];
-  const up = await fetchUpstoxChain({ symbol, expiryISO, accessToken: upstoxAccessToken });
+  const up = await fetchUpstoxChain({
+    symbol, expiryISO, accessToken: upstoxAccessToken,
+    exchange: angelChain?.exchange, spotToken: angelChain?.spotToken,
+  });
 
   // Build parallel bid/ask arrays aligned to Angel's strike order.
   const callBid = [], callAsk = [], callBidQty = [], callAskQty = [], callGreeks = [];

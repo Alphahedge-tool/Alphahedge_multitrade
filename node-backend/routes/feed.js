@@ -55,10 +55,14 @@ route('POST', '/api/feed/option-chain', async (req) => {
   }
 
   // 2) Upstox enrichment (bid/ask/greeks) — from the feed's Upstox account.
+  //    MCX options need the future's key as the underlying; pass the chain's
+  //    resolved exchange + spot (future) token through so it can be built.
   const upstox = await buildUpstoxExtra({
     symbol: b.symbol,
     expiry: chain.expiry || b.expiry,
     strikes: chain.strikes || [],
+    exchange: chain.exchange,
+    spotToken: chain.spotToken,
   });
 
   return { status: true, ...chain, upstox };
@@ -71,18 +75,20 @@ route('POST', '/api/feed/option-chain-extra', async (req) => {
     symbol: b.symbol,
     expiry: b.expiry,
     strikes: Array.isArray(b.strikes) ? b.strikes : [],
+    exchange: b.exchange,
+    spotToken: b.spotToken,
   });
   return { status: true, ...upstox };
 });
 
-async function buildUpstoxExtra({ symbol, expiry, strikes }) {
+async function buildUpstoxExtra({ symbol, expiry, strikes, exchange, spotToken }) {
   const upFeed = getFeedAccount('upstox');
   let upstox = { source: 'no-upstox-in-feed', aligned: null };
   if (upFeed?.userId) {
     const sess = getUpstoxSession(upFeed.userId);
     if (sess?.accessToken && strikes?.length) {
       const { byStrike, source, spot } = await fetchUpstoxChain({
-        symbol, expiryISO: toISODate(expiry), accessToken: sess.accessToken,
+        symbol, expiryISO: toISODate(expiry), accessToken: sess.accessToken, exchange, spotToken,
       });
       const A = { callBid: [], callAsk: [], callBidQty: [], callAskQty: [], callGreeks: [], putBid: [], putAsk: [], putBidQty: [], putAskQty: [], putGreeks: [] };
       for (const strike of strikes) {

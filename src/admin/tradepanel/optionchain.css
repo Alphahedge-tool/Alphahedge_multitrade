@@ -1,5 +1,16 @@
 /* Standalone enriched option chain — CALL | STRIKE | PUT grid with Bid/Ask
-   columns from Upstox. Uses the AlphaHedge --ao-* design tokens. */
+   columns from Upstox. Uses the AlphaHedge --ao-* design tokens.
+
+   Zerodha Kite styling: Open Sans everywhere, flat white surface, green CALL /
+   red PUT bands, compact tabular rows, centered strike column, subtle OI depth
+   bars and ITM shading. The controls row keeps MUI (dropdowns + button + chips);
+   the table itself is pure Kite. */
+
+.oc-panel,
+.oc-panel .oc-table,
+.oc-page .oc-page-title {
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+}
 
 /* Page shell: a fixed-height flex column that owns the vertical space so ONLY
    the table scrolls (like Get Position). .app-main is padded 18px (top+bottom
@@ -31,20 +42,21 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 58px;
-  padding: 10px 14px;
+  min-height: 52px;
+  padding: 8px 14px;
   border: 1px solid var(--ao-border-soft);
-  border-radius: 8px;
-  background: linear-gradient(180deg, var(--ao-surface), var(--ao-surface-2));
-  box-shadow: var(--shadow-card);
+  border-radius: 4px;
+  background: var(--ao-surface);
 }
 
 .oc-page-title h5.MuiTypography-root {
   margin: 0;
   color: var(--ao-bold);
-  font-size: 1.08rem;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.05rem;
   line-height: 1.2;
-  font-weight: 800;
+  font-weight: 600;
+  letter-spacing: .01em;
 }
 
 .oc-page-title p.MuiTypography-root {
@@ -93,9 +105,8 @@
   padding: 10px;
   margin-bottom: 7px;
   border: 1px solid var(--ao-border-soft);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--ao-surface);
-  box-shadow: var(--shadow-card);
   flex-wrap: wrap;
   flex: 0 0 auto; /* controls keep their height; table takes the rest */
 }
@@ -127,6 +138,146 @@
   white-space: nowrap;
 }
 
+/* Filter toggle button — sits in the controls row; highlights when a filter
+   is active and shows a match-count badge. */
+.oc-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--ao-border);
+  border-radius: 4px;
+  background: var(--ao-surface);
+  color: var(--ao-base);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+.oc-filter-toggle:hover:not(:disabled) {
+  border-color: var(--ao-blue);
+  color: var(--ao-blue);
+}
+.oc-filter-toggle:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.oc-filter-toggle.active {
+  border-color: var(--ao-blue);
+  background: var(--ao-blue-bg);
+  color: var(--ao-blue);
+}
+.oc-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ao-blue);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+/* The structured filter bar — Field + Condition + Value(s) + Side, Kite-styled.
+   Sits directly under the controls card. */
+.oc-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 7px;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 4px;
+  background: var(--ao-surface);
+  flex: 0 0 auto;
+}
+.oc-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ao-caption);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.oc-filter-bar .MuiFormControl-root {
+  background: var(--ao-surface);
+}
+.oc-filter-value {
+  width: 92px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--ao-border);
+  border-radius: 4px;
+  background: var(--ao-surface);
+  color: var(--ao-base);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.82rem;
+  outline: 0;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.oc-filter-value:focus {
+  border-color: var(--ao-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ao-blue) 16%, transparent);
+}
+.oc-filter-value::placeholder {
+  color: var(--ao-placeholder);
+}
+.oc-filter-and {
+  color: var(--ao-caption);
+  font-size: 0.78rem;
+}
+.oc-filter-tol {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ao-blue-bg);
+  color: var(--ao-blue);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+  cursor: help;
+}
+.oc-filter-count {
+  color: var(--ao-blue);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.oc-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ao-caption);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
+}
+.oc-filter-clear:hover {
+  background: color-mix(in srgb, var(--ao-red) 12%, transparent);
+  color: var(--ao-red);
+}
+
 .oc-controls .MuiChip-root {
   height: 26px;
   border-radius: 6px;
@@ -156,7 +307,7 @@
   overflow-x: hidden;
   scrollbar-gutter: stable both-edges;
   border: 1px solid var(--ao-border-soft);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--ao-surface);
 }
 
@@ -189,8 +340,10 @@
 
 .oc-skel-head {
   height: 56px;
-  background: linear-gradient(90deg, var(--ao-green-bg), var(--ao-surface-2), var(--ao-red-bg));
+  background: var(--ao-surface-2);
 }
+.oc-skel-side:first-child .oc-skel-head { background: color-mix(in srgb, var(--ao-green) 14%, var(--ao-surface)); }
+.oc-skel-side:last-child .oc-skel-head { background: color-mix(in srgb, var(--ao-red) 14%, var(--ao-surface)); }
 
 .oc-skel-row::after {
   content: "";
@@ -263,22 +416,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-bottom: 1px solid var(--ao-border-soft);
   font-size: 0.72rem;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: .08em;
   line-height: 1;
   text-transform: uppercase;
+  color: #fff;
   pointer-events: none;
 }
 
+/* Kite's CALLS band sits on the left (green), PUTS on the right (red). */
 .oc-call-band {
-  color: var(--ao-green);
-  background: var(--ao-green-bg);
+  background: var(--ao-green);
 }
 
 .oc-put-band {
-  color: var(--ao-red);
-  background: var(--ao-red-bg);
+  background: var(--ao-red);
 }
 
 .oc-call-scroll {
@@ -339,12 +492,14 @@
   position: sticky;
   z-index: 2;
   box-sizing: border-box;
-  background: var(--ao-surface-2);
+  background: var(--ao-surface);
   color: var(--ao-caption);
-  font-weight: 700;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
   font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+  /* Kite keeps column labels in normal case (Delta, Gamma, Bid / Ask), not ALL CAPS. */
+  text-transform: none;
+  letter-spacing: 0.01em;
   padding: 7px 8px;
   text-align: right;
   border-bottom: 1px solid var(--ao-border-soft);
@@ -363,9 +518,16 @@
 }
 
 .oc-side-head th { text-align: center; padding: 6px; }
-.oc-side-head .oc-call { color: transparent; background: var(--ao-green-bg); }
-.oc-side-head .oc-put { color: transparent; background: var(--ao-red-bg); }
-.oc-side-head .oc-strike { color: var(--ao-bold); }
+/* The solid band overlays these, so the underlying strip just needs to match its
+   colour (green CALL / red PUT) — text stays transparent since the band shows it. */
+.oc-side-head .oc-call { color: transparent; background: var(--ao-green); }
+.oc-side-head .oc-put { color: transparent; background: var(--ao-red); }
+.oc-side-head .oc-strike {
+  color: var(--ao-bold);
+  background: var(--ao-surface-2);
+  font-weight: 600;
+  letter-spacing: .06em;
+}
 
 .oc-strike-cell {
   position: static;
@@ -387,11 +549,13 @@
 
 .oc-table td {
   box-sizing: border-box;
-  height: 34px;
+  height: 32px;
   padding: 0 8px;
   text-align: right;
   border-bottom: 1px solid var(--ao-border-soft);
   color: var(--ao-base);
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -438,41 +602,50 @@
 
 .oc-row:hover td { background: var(--ao-hover); }
 
-/* ATM row emphasized. */
+/* ATM row emphasized — Kite marks it with a soft blue band and heavier text. */
 .oc-atm td {
   background: var(--ao-blue-surface) !important;
-  font-weight: 700;
+  font-weight: 600;
 }
 
-/* In-the-money shading (subtle), CALL side left / PUT side right. */
-.oc-itm { background: rgba(0, 143, 117, 0.06); }
+/* In-the-money shading — Kite tints the ITM cells a faint yellow. CALL strikes
+   below spot are ITM (left side); PUT strikes above spot are ITM (right side). */
+.oc-itm { background: rgba(255, 193, 7, 0.08); }
+
+/* A filter is active and THIS leg didn't match it — fade it so the matching side
+   stands out. The strike column stays full-opacity; only the call/put leg dims. */
+.oc-row.oc-dimmed td {
+  opacity: 0.32;
+}
 
 /* OI depth bars, adapted from the Enter Trade chain. */
 .oc-oi {
   position: relative;
   color: var(--ao-base);
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.76rem;
+  font-weight: 600;
   isolation: isolate;
 }
 
 .oc-oi-bar {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 5px;
+  bottom: 5px;
   z-index: 0;
   min-width: 0;
-  border-radius: 4px;
+  border-radius: 3px;
   pointer-events: none;
 }
 
+/* Kite draws the OI depth bar in the side's accent colour — CALL red, PUT green
+   — growing inward from the strike column. */
 .oc-call-oi {
   text-align: right;
 }
 
 .oc-call-oi .oc-oi-bar {
   right: 0;
-  background: rgba(63, 91, 217, .26);
+  background: color-mix(in srgb, var(--ao-red) 22%, transparent);
 }
 
 .oc-put-oi {
@@ -481,7 +654,7 @@
 
 .oc-put-oi .oc-oi-bar {
   left: 0;
-  background: rgba(249, 186, 77, .36);
+  background: color-mix(in srgb, var(--ao-green) 22%, transparent);
 }
 
 .oc-oi-val {
@@ -490,7 +663,7 @@
   padding: 0 4px;
 }
 
-.oc-ltp { font-weight: 700; color: var(--ao-bold); }
+.oc-ltp { font-weight: 600; color: var(--ao-bold); }
 .oc-ltp.oc-head { color: var(--ao-caption); }
 
 /* A live-streaming LTP cell (a WebSocket tick has arrived for this token):
@@ -516,7 +689,9 @@
 
 .oc-strike-cell {
   text-align: center;
-  font-weight: 800;
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: .01em;
   color: var(--ao-bold);
   background: var(--ao-surface-2);
 }
@@ -524,7 +699,7 @@
 .oc-iv,
 .oc-greek {
   color: var(--ao-caption);
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   text-align: right;
 }
 

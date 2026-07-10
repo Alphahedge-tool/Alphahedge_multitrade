@@ -18,6 +18,7 @@ import {
   ExternalLink,
   FileText,
   LayoutDashboard,
+  Newspaper,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
@@ -38,10 +39,12 @@ function AdminSidebar() {
   const [mastersOpen, setMastersOpen] = useState(true)
   const [transactionsOpen, setTransactionsOpen] = useState(true)
   const [tradePanelOpen, setTradePanelOpen] = useState(true)
+  const [marketInfoOpen, setMarketInfoOpen] = useState(true)
 
   const isMastersRoute = location.pathname.startsWith('/admin/masters')
   const isTransactionsRoute = location.pathname.startsWith('/admin/transactions')
   const isTradePanelRoute = location.pathname.startsWith('/admin/trade-panel')
+  const isMarketInfoRoute = location.pathname.startsWith('/admin/market-info')
 
   const NavIcon = ({ children }) => (
     <Box sx={{ display: 'inline-flex', width: 18, height: 18, alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
@@ -277,6 +280,26 @@ function AdminSidebar() {
                 <NavIcon><BriefcaseBusiness size={15} /></NavIcon>
                 <ListItemText primary="Get Position Book" />
               </ListItemButton>
+            </List>
+          </AccordionDetails>
+        </Accordion>
+
+        <Accordion
+          expanded={marketInfoOpen || isMarketInfoRoute}
+          onChange={() => setMarketInfoOpen(!marketInfoOpen)}
+          elevation={0}
+          disableGutters
+          square
+          sx={{ bgcolor: 'transparent', '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ChevronDown size={15} />} sx={summarySx(isMarketInfoRoute)}>
+            <NavIcon><Newspaper size={16} /></NavIcon>
+            <ListItemText primary="Market Info" />
+          </AccordionSummary>
+
+          <AccordionDetails sx={{ p: 0 }}>
+            <List component="div" disablePadding>
+              {/* Sub-items to be added next. */}
             </List>
           </AccordionDetails>
         </Accordion>

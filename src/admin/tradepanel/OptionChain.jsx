@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
-import { RefreshCw, Radio, Zap, ZapOff } from 'lucide-react'
+import { Filter, RefreshCw, Radio, X, Zap, ZapOff } from 'lucide-react'
 import './optionchain.css'
 
 const DASH = '-'
@@ -13,6 +13,69 @@ const px = (v) => (v == null ? DASH : Number(v).toFixed(2))
 const greek = (v, digits = 2) => (v == null || Number.isNaN(Number(v)) ? DASH : Number(v).toFixed(digits))
 const tickKey = (broker, token) => (token != null && token !== '' ? `${broker}|${token}` : '')
 const oiWidth = (oi, maxOi) => (maxOi ? Math.min(100, Math.round(((Number(oi) || 0) / maxOi) * 100)) : 0)
+
+// Option-chain filter fields. Each knows how to pull its value from a strike's
+// row (side-aware for premium/greeks; "strike" ignores side). `step` sets the
+// input step + how tight an "=" match is (± half a step). `tol` is a tolerance
+// band added around the requested value/range so options that just miss the cut
+// still show — e.g. Premium 40–50 also surfaces 51, 52 and 38, 39 (±5 buffer).
+const FILTER_FIELDS = [
+  { id: 'premium', label: 'Premium (LTP)', step: 1, tol: 5, get: (r, side) => (side === 'put' ? r.putLtp : r.callLtp) },
+  { id: 'delta', label: 'Delta', step: 0.05, get: (r, side) => (side === 'put' ? r.putGreeks?.delta : r.callGreeks?.delta) },
+  { id: 'iv', label: 'IV', step: 1, get: (r, side) => (side === 'put' ? r.putGreeks?.iv : r.callGreeks?.iv) },
+  { id: 'gamma', label: 'Gamma', step: 0.001, get: (r, side) => (side === 'put' ? r.putGreeks?.gamma : r.callGreeks?.gamma) },
+  { id: 'theta', label: 'Theta', step: 1, get: (r, side) => (side === 'put' ? r.putGreeks?.theta : r.callGreeks?.theta) },
+  { id: 'vega', label: 'Vega', step: 0.1, get: (r, side) => (side === 'put' ? r.putGreeks?.vega : r.callGreeks?.vega) },
+  { id: 'oi', label: 'OI', step: 1, get: (r, side) => (side === 'put' ? r.putOI : r.callOI) },
+  { id: 'strike', label: 'Strike', step: 1, sideless: true, get: (r) => r.strike },
+]
+const FILTER_FIELD_BY_ID = Object.fromEntries(FILTER_FIELDS.map((f) => [f.id, f]))
+
+const FILTER_OPERATORS = [
+  { id: 'lt', label: '<' },
+  { id: 'lte', label: '≤' },
+  { id: 'eq', label: '=' },
+  { id: 'gte', label: '≥' },
+  { id: 'gt', label: '>' },
+  { id: 'between', label: 'between' },
+]
+
+const DEFAULT_FILTER = { field: 'premium', op: 'lte', side: 'call', value: '', value2: '' }
+
+// Build a per-strike predicate from the active filter. Returns null when the
+// filter is incomplete (so the chain shows everything).
+function buildFilterPredicate(filter) {
+  if (!filter) return null
+  const field = FILTER_FIELD_BY_ID[filter.field]
+  if (!field) return null
+  const a = Number(filter.value)
+  if (!Number.isFinite(a) || filter.value === '') return null
+  const b = Number(filter.value2)
+  if (filter.op === 'between' && (!Number.isFinite(b) || filter.value2 === '')) return null
+
+  // Tolerance band: loosen the cut-offs by ±tol so values just outside still
+  // match (e.g. premium 40–50 also shows 51, 52). Fields without a `tol` (greeks,
+  // strike, OI) stay exact.
+  const tol = field.tol || 0
+
+  const cmp = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return false
+    const n = Number(v)
+    switch (filter.op) {
+      case 'lt': return n < a + tol
+      case 'lte': return n <= a + tol
+      case 'gt': return n > a - tol
+      case 'gte': return n >= a - tol
+      case 'between': return n >= Math.min(a, b) - tol && n <= Math.max(a, b) + tol
+      case 'eq': return Math.abs(n - a) <= Math.max(field.step / 2, tol)
+      default: return false
+    }
+  }
+
+  // Side: which column(s) the field is read from. Strike is side-independent.
+  const sides = field.sideless ? ['call'] : filter.side === 'either' ? ['call', 'put'] : [filter.side]
+  return (row) => sides.some((side) => cmp(field.get(row, side)))
+}
 
 function createLiveTickStore() {
   const ticks = new Map()
@@ -134,7 +197,7 @@ function liveGreekFromTicks(upTick, field, restVal) {
 // whose values actually changed — not the whole table — keeping horizontal
 // scroll smooth while prices stream in.
 const CallRow = memo(function CallRow({
-  strike, isAtm, itm, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  strike, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
   restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
   const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
@@ -151,7 +214,7 @@ const CallRow = memo(function CallRow({
   const baLive = angelTick?.bid != null || upTick?.bid != null
 
   return (
-    <tr className={`oc-row${isAtm ? ' oc-atm' : ''}`}>
+    <tr className={`oc-row${isAtm ? ' oc-atm' : ''}${dimmed ? ' oc-dimmed' : ''}`}>
       <td className="oc-greek">{greek(iv, 1)}</td>
       <td className="oc-greek">{greek(delta, 3)}</td>
       <td className="oc-greek">{greek(gamma, 4)}</td>
@@ -166,7 +229,7 @@ const CallRow = memo(function CallRow({
 
 // One PUT-side row (mirror column order), memoized for the same reason.
 const PutRow = memo(function PutRow({
-  strike, isAtm, itm, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  strike, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
   restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
   const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
@@ -183,7 +246,7 @@ const PutRow = memo(function PutRow({
   const baLive = angelTick?.bid != null || upTick?.bid != null
 
   return (
-    <tr className={`oc-row${isAtm ? ' oc-atm' : ''}`}>
+    <tr className={`oc-row${isAtm ? ' oc-atm' : ''}${dimmed ? ' oc-dimmed' : ''}`}>
       <td className={`oc-ltp${itm ? ' oc-itm' : ''}${ltpLive ? ' oc-live' : ''}`}>{px(ltp)}</td>
       <td className={`oc-bidask${baLive ? ' oc-live' : ''}`}><span className="oc-bid">{px(bid)}</span><span className="oc-sep">/</span><span className="oc-ask">{px(ask)}</span></td>
       <td className={`oc-oi oc-put-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth(oi, maxOi)}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
@@ -240,6 +303,9 @@ export default function OptionChain() {
   // Upstox token per strike-index (for live Bid/Ask), resolved from the master.
   const [upTokens, setUpTokens] = useState({ callTokens: [], putTokens: [] })
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 })
+  // Structured filter: field (premium/greek/OI/strike) + operator + value + side.
+  const [filter, setFilter] = useState(DEFAULT_FILTER)
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // Index underlyings + MCX commodities. MCX names must match the Angel scrip
   // master (see node-backend/angel/scripoptions.js MCX_SYMBOLS).
@@ -310,7 +376,15 @@ export default function OptionChain() {
       const tokenPromise = fetchUpstoxTokens(body)
       const extraPromise = fetch('/api/feed/option-chain-extra', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: body.symbol, expiry: body.expiry, strikes: body.strikes || [] }),
+        body: JSON.stringify({
+          symbol: body.symbol,
+          expiry: body.expiry,
+          strikes: body.strikes || [],
+          // MCX greeks need the future's key — pass the chain's resolved
+          // exchange + spot (future) token so the backend can build it.
+          exchange: body.exchange,
+          spotToken: body.spotToken,
+        }),
       }).then((r) => r.json()).catch(() => null)
 
       const upMap = await tokenPromise
@@ -477,7 +551,7 @@ export default function OptionChain() {
   }, [])
 
   // Freshness: a tick within the last 3s means the feed is genuinely live.
-  const { tickCount, lastTickAt } = useLiveMeta()
+  const { tickCount, lastTickAt, version: tickVersion } = useLiveMeta()
   const secsSinceTick = lastTickAt ? Math.floor((Date.now() - lastTickAt) / 1000) : null
   const liveStreaming = wsState === 'open' && secsSinceTick != null && secsSinceTick <= 3
 
@@ -624,15 +698,79 @@ export default function OptionChain() {
   }, [chain])
   const [spotTick] = useLiveTicks([tickKey('angel', chain?.spotToken)])
   const spotLtp = spotTick?.ltp != null ? spotTick.ltp : chain?.spot
-  const isVirtual = (chain?.strikes?.length || 0) > VIRTUAL_ROW_THRESHOLD
+
+  // Filter: matched strike indices (null = no active filter). Reads premium/OI
+  // from the base chain and greeks from the Upstox overlay. Small result set, so
+  // matched rows render without virtualizing.
+  //
+  // IMPORTANT: the base REST chain often has callLtp/putLtp = 0 (Angel returns 0
+  // for the snapshot); the premium/greeks the table shows come from the LIVE
+  // tick store. So the filter must read the SAME live-first values the rows do —
+  // otherwise a premium filter never matches. tickVersion re-runs this as ticks
+  // arrive so the filtered set stays in sync with what's on screen.
+  const filterPredicate = useMemo(() => buildFilterPredicate(filter), [filter])
+  // matchedIndexes = strike positions to show; matchedSides = per-index which
+  // leg actually passed (so we can dim the non-matching leg in the row).
+  const { matchedIndexes, matchedSides } = useMemo(() => {
+    if (!filterPredicate || !chain?.strikes?.length) return { matchedIndexes: null, matchedSides: null }
+    const field = FILTER_FIELD_BY_ID[filter.field]
+    const sideless = !!field?.sideless
+    const aligned = chain?.upstox?.aligned
+    const liveVal = (i, side) => {
+      const angelToken = (side === 'put' ? chain.putTokens : chain.callTokens)?.[i]
+      const upToken = (side === 'put' ? upTokens.putTokens : upTokens.callTokens)?.[i]
+      const angelTick = liveTickStore.getTick(tickKey('angel', angelToken))
+      const upTick = liveTickStore.getTick(tickKey('upstox', upToken))
+      const restLtp = side === 'put' ? chain.putLtp?.[i] : chain.callLtp?.[i]
+      const restOi = side === 'put' ? chain.putOI?.[i] : chain.callOI?.[i]
+      const restGreeks = side === 'put' ? aligned?.putGreeks?.[i] : aligned?.callGreeks?.[i]
+      return {
+        ltp: liveLtpFromTicks(angelTick, upTick, wsBroker, restLtp),
+        oi: liveOiFromTicks(angelTick, upTick, restOi),
+        greeks: {
+          iv: liveGreekFromTicks(upTick, 'iv', restGreeks?.iv),
+          delta: liveGreekFromTicks(upTick, 'delta', restGreeks?.delta),
+          gamma: liveGreekFromTicks(upTick, 'gamma', restGreeks?.gamma),
+          theta: liveGreekFromTicks(upTick, 'theta', restGreeks?.theta),
+          vega: liveGreekFromTicks(upTick, 'vega', restGreeks?.vega),
+        },
+      }
+    }
+    // Test one side by feeding the predicate only that side's values (the other
+    // side gets nullish, so the OR inside the predicate can't match it).
+    const rowForSide = (i, side) => {
+      const v = liveVal(i, side)
+      return side === 'call'
+        ? { strike: Number(chain.strikes[i]), callLtp: v.ltp, putLtp: null, callOI: v.oi, putOI: null, callGreeks: v.greeks, putGreeks: null }
+        : { strike: Number(chain.strikes[i]), callLtp: null, putLtp: v.ltp, callOI: null, putOI: v.oi, callGreeks: null, putGreeks: v.greeks }
+    }
+    const out = []
+    const sides = {}
+    chain.strikes.forEach((strike, i) => {
+      const callHit = !sideless && filter.side !== 'put' && filterPredicate(rowForSide(i, 'call'))
+      const putHit = !sideless && filter.side !== 'call' && filterPredicate(rowForSide(i, 'put'))
+      // Strike (sideless) filters match the whole row and dim neither leg.
+      const strikeHit = sideless && filterPredicate({ strike: Number(strike) })
+      if (callHit || putHit || strikeHit) {
+        out.push(i)
+        sides[i] = sideless ? { call: true, put: true } : { call: callHit, put: putHit }
+      }
+    })
+    return { matchedIndexes: out, matchedSides: sides }
+  }, [filterPredicate, filter.field, filter.side, chain, upTokens, wsBroker, tickVersion])
+  const isSearching = matchedIndexes != null
+
+  // Virtualize only when NOT searching and the ladder is long.
+  const isVirtual = !isSearching && (chain?.strikes?.length || 0) > VIRTUAL_ROW_THRESHOLD
   const rowIndexes = useMemo(() => {
     const rowCount = chain?.strikes?.length || 0
     if (!rowCount) return []
+    if (matchedIndexes) return matchedIndexes
     const start = isVirtual ? Math.min(visibleRange.start, rowCount) : 0
     const measuredEnd = visibleRange.end || Math.min(rowCount, 40)
     const end = isVirtual ? Math.min(Math.max(measuredEnd, start), rowCount) : rowCount
     return Array.from({ length: end - start }, (_, offset) => start + offset)
-  }, [chain, isVirtual, visibleRange])
+  }, [chain, isVirtual, visibleRange, matchedIndexes])
   const renderedStart = rowIndexes[0] ?? 0
   const renderedEnd = rowIndexes.length ? rowIndexes[rowIndexes.length - 1] + 1 : 0
   const topPad = isVirtual ? renderedStart * ROW_HEIGHT : 0
@@ -661,6 +799,19 @@ export default function OptionChain() {
           {loading ? 'Loading…' : 'Load Chain'}
         </Button>
 
+        {/* Filter toggle — opens the structured filter bar (field/operator/value/side). */}
+        <button
+          type="button"
+          className={`oc-filter-toggle${isSearching ? ' active' : ''}`}
+          onClick={() => setFilterOpen((v) => !v)}
+          disabled={!chain}
+          title="Filter by premium or greeks"
+        >
+          <Filter size={15} />
+          Filter
+          {isSearching && <span className="oc-filter-badge">{matchedIndexes.length}</span>}
+        </button>
+
         {/* Live WebSocket controls + status — the whole point of the MCX test. */}
         <FormControl size="small" sx={{ minWidth: 120 }}>
           <InputLabel>Live feed</InputLabel>
@@ -671,6 +822,15 @@ export default function OptionChain() {
         </Box>
 
         <Box className="oc-controls-status">
+          {isSearching && (
+            <Chip
+              size="small"
+              color={matchedIndexes.length ? 'primary' : 'default'}
+              variant="outlined"
+              icon={<Filter size={12} />}
+              label={matchedIndexes.length ? `${matchedIndexes.length} match${matchedIndexes.length === 1 ? '' : 'es'}` : 'no matches'}
+            />
+          )}
           {/* WebSocket status: the SOCKET being open (browser<->backend) is
               separate from the selected broker's upstream adapter being connected,
               which is separate again from ticks currently flowing. Show the honest
@@ -694,6 +854,98 @@ export default function OptionChain() {
           {chain && <Chip size="small" label={`ATM ${num(atm)}`} />}
         </Box>
       </Box>
+
+      {/* Structured filter bar: Field + Operator + Value(s) + Side. Filters the
+          visible strikes live. Greeks come from the Upstox overlay. */}
+      {filterOpen && chain && (
+        <div className="oc-filter-bar">
+          <span className="oc-filter-label"><Filter size={14} /> Filter</span>
+
+          <FormControl size="small" className="oc-filter-ctl" sx={{ minWidth: 140 }}>
+            <InputLabel>Field</InputLabel>
+            <Select
+              label="Field"
+              value={filter.field}
+              onChange={(e) => setFilter((f) => ({ ...f, field: e.target.value }))}
+            >
+              {FILTER_FIELDS.map((fld) => <MenuItem key={fld.id} value={fld.id}>{fld.label}</MenuItem>)}
+            </Select>
+          </FormControl>
+
+          <FormControl size="small" className="oc-filter-ctl" sx={{ minWidth: 108 }}>
+            <InputLabel>Condition</InputLabel>
+            <Select
+              label="Condition"
+              value={filter.op}
+              onChange={(e) => setFilter((f) => ({ ...f, op: e.target.value }))}
+            >
+              {FILTER_OPERATORS.map((op) => <MenuItem key={op.id} value={op.id}>{op.label}</MenuItem>)}
+            </Select>
+          </FormControl>
+
+          <input
+            className="oc-filter-value"
+            type="number"
+            inputMode="decimal"
+            step={FILTER_FIELD_BY_ID[filter.field]?.step || 1}
+            value={filter.value}
+            onChange={(e) => setFilter((f) => ({ ...f, value: e.target.value }))}
+            placeholder="value"
+            aria-label="Filter value"
+          />
+          {filter.op === 'between' && (
+            <>
+              <span className="oc-filter-and">and</span>
+              <input
+                className="oc-filter-value"
+                type="number"
+                inputMode="decimal"
+                step={FILTER_FIELD_BY_ID[filter.field]?.step || 1}
+                value={filter.value2}
+                onChange={(e) => setFilter((f) => ({ ...f, value2: e.target.value }))}
+                placeholder="value"
+                aria-label="Filter second value"
+              />
+            </>
+          )}
+
+          {FILTER_FIELD_BY_ID[filter.field]?.tol > 0 && (
+            <span className="oc-filter-tol" title={`Includes values within ±${FILTER_FIELD_BY_ID[filter.field].tol} of your ${filter.op === 'between' ? 'range' : 'value'}`}>
+              ±{FILTER_FIELD_BY_ID[filter.field].tol}
+            </span>
+          )}
+
+          {!FILTER_FIELD_BY_ID[filter.field]?.sideless && (
+            <FormControl size="small" className="oc-filter-ctl" sx={{ minWidth: 100 }}>
+              <InputLabel>Side</InputLabel>
+              <Select
+                label="Side"
+                value={filter.side}
+                onChange={(e) => setFilter((f) => ({ ...f, side: e.target.value }))}
+              >
+                <MenuItem value="either">Either</MenuItem>
+                <MenuItem value="call">Call</MenuItem>
+                <MenuItem value="put">Put</MenuItem>
+              </Select>
+            </FormControl>
+          )}
+
+          {isSearching && (
+            <span className="oc-filter-count">
+              {matchedIndexes.length} match{matchedIndexes.length === 1 ? '' : 'es'}
+            </span>
+          )}
+
+          <button
+            type="button"
+            className="oc-filter-clear"
+            onClick={() => setFilter((f) => ({ ...DEFAULT_FILTER, field: f.field }))}
+            title="Clear filter"
+          >
+            <X size={14} /> Clear
+          </button>
+        </div>
+      )}
 
       {/* Live-feed hint line: distinguishes socket / adapter / ticks so a quiet
           broker is never mistaken for a disconnected one. */}
@@ -731,7 +983,15 @@ export default function OptionChain() {
           </div>
         )}
         {!loading && !chain && <div className="oc-empty">Select an underlying (index or MCX) and load the chain</div>}
-        {chain && (
+        {chain && isSearching && matchedIndexes.length === 0 && (
+          <div className="oc-empty">
+            No strikes match this filter
+            {['delta', 'iv', 'gamma', 'theta', 'vega'].includes(filter.field) && !chain?.upstox?.aligned
+              ? ' — greeks are still loading from Feed Master; try again in a moment or filter by Premium/OI.'
+              : ' — widen the value or change the condition.'}
+          </div>
+        )}
+        {chain && !(isSearching && matchedIndexes.length === 0) && (
           <div className="oc-split-grid">
             <div className="oc-side-scroll oc-call-scroll" ref={callScrollRef}>
               <div className="oc-side-band oc-call-band">CALL</div>
@@ -755,6 +1015,7 @@ export default function OptionChain() {
                         strike={strike}
                         isAtm={strike === atm}
                         itm={!!(atm && strike < atm)}
+                        dimmed={isSearching && matchedSides?.[i] && !matchedSides[i].call}
                         restIv={cg?.iv}
                         restDelta={cg?.delta}
                         restGamma={cg?.gamma}
@@ -815,6 +1076,7 @@ export default function OptionChain() {
                         strike={strike}
                         isAtm={strike === atm}
                         itm={!!(atm && strike > atm)}
+                        dimmed={isSearching && matchedSides?.[i] && !matchedSides[i].put}
                         restIv={pg?.iv}
                         restDelta={pg?.delta}
                         restGamma={pg?.gamma}

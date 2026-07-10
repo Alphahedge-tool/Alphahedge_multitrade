@@ -36,7 +36,9 @@ route('POST', '/api/master/option-chain-extra', async (req) => {
   }
 
   const expiryISO = toISODate(b.expiry);
-  const { byStrike, source, spot } = await fetchUpstoxChain({ symbol: b.symbol, expiryISO, accessToken });
+  const { byStrike, source, spot } = await fetchUpstoxChain({
+    symbol: b.symbol, expiryISO, accessToken, exchange: b.exchange, spotToken: b.spotToken,
+  });
 
   // If the frontend passed the Angel strike list, return arrays aligned to it
   // (index-matched) so it can splice bid/ask straight into its chain object.

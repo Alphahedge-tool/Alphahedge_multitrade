@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Info, RefreshCw } from 'lucide-react'
+import { Info, RefreshCw, Search } from 'lucide-react'
 import { apiGet } from '../config/api'
 import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore'
-import { compactProductTag, parseTradingSymbol } from './symbolParse'
+import { bookProductTag, parseTradingSymbol } from './symbolParse'
 import { CompactSelect } from './PositionSelect'
 import './tradepanel.css'
-
-const ORDER_COLUMNS = ['stock', 'product', 'qty', 'price', 'trigger', 'status', 'time']
 
 function money(value) {
   const n = Number(value || 0)
   if (!Number.isFinite(n) || n === 0) return '-'
+  return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// Kite renders order prices as plain numbers, including 0.00 for market orders.
+function orderMoney(value) {
+  const n = Number(value || 0)
+  if (!Number.isFinite(n)) return '0.00'
   return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
@@ -33,6 +38,7 @@ export default function GetOrderBook() {
   const [loading, setLoading] = useState(false)
   const [configLoading, setConfigLoading] = useState(false)
   const [streamStatus, setStreamStatus] = useState('')
+  const [query, setQuery] = useState('')
   const autoLoadedAccountRef = useRef('')
 
   const selectedConfig = configs.find((config) => String(config.id) === String(configId))
@@ -254,15 +260,66 @@ export default function GetOrderBook() {
   }, [client?.clientCode, client?.session?.accessToken, client?.session?.userId, selectedIsZerodha])
 
   const summary = useMemo(() => {
-    const complete = rows.filter((row) => /complete|traded|executed/i.test(String(orderStatus(row)))).length
-    const rejected = rows.filter((row) => /reject|cancel|fail/i.test(String(orderStatus(row)))).length
-    return { complete, rejected, pending: Math.max(rows.length - complete - rejected, 0) }
+    let complete = 0
+    let rejected = 0
+    let open = 0
+    for (const row of rows) {
+      const kind = orderStatusMeta(row).kind
+      if (kind === 'complete') complete += 1
+      else if (kind === 'rejected' || kind === 'cancelled') rejected += 1
+      else open += 1
+    }
+    return { complete, rejected, open }
   }, [rows])
+
+  const visibleRows = useMemo(() => {
+    const q = query.trim().toUpperCase()
+    if (!q) return rows
+    return rows.filter((row) => [
+      valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], ''),
+      orderStatus(row),
+      orderSide(row),
+      valueOf(row, ['producttype', 'product_type', 'product'], ''),
+      valueOf(row, ['ordertype', 'order_type', 'variety'], ''),
+      valueOf(row, ['orderid', 'uniqueorderid'], ''),
+    ].join(' ').toUpperCase().includes(q))
+  }, [query, rows])
+
+  const grouped = useMemo(() => {
+    const open = []
+    const executed = []
+    for (const row of visibleRows) {
+      (orderStatusMeta(row).open ? open : executed).push(row)
+    }
+    return { open, executed }
+  }, [visibleRows])
 
   return (
     <div className="trade-panel">
-      <div className="positions-view">
-        <div className="positions-toolbar">
+      <div className="positions-view positions-book-view order-book-view">
+        <div className="positions-book-header order-book-header">
+          <div className="positions-book-title">
+            <strong>Orders{rows.length ? ` (${rows.length})` : ''}</strong>
+            <span>{selectedBrokerName || 'Broker'} orderbook — status, price and execution time</span>
+          </div>
+          <div className="positions-book-actions order-book-actions">
+            <label className="positions-book-search">
+              <Search size={14} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search orders"
+              />
+            </label>
+            <div className="order-book-step-tags" aria-label="Order status summary">
+              <span className="order-book-step-tag pending">Open {summary.open}</span>
+              <span className="order-book-step-tag done">Complete {summary.complete}</span>
+              <span className="order-book-step-tag failed">Rejected {summary.rejected}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="positions-toolbar positions-book-accountbar order-book-toolbar">
           <CompactSelect
             title="User"
             value={userId}
@@ -288,145 +345,164 @@ export default function GetOrderBook() {
           <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
             {loading ? 'Loading' : 'Get Orderbook'}
           </button>
-          {rows.length > 0 && <span className="positions-total up">{rows.length} Orders</span>}
-          {status && <span className="positions-status">{status}</span>}
-          {streamStatus && <span className="positions-status">{streamStatus}</span>}
+          {rows.length > 0 && <span className="positions-total order-book-count">{rows.length} Orders</span>}
+          {status && <span className="positions-status order-book-status">{status}</span>}
+          {streamStatus && <span className="positions-status order-book-status live">{streamStatus}</span>}
         </div>
 
-        {rows.length > 0 && (
-          <div className="position-book-summary">
-            <div>
-              <span className="buy">Complete</span>
-              <strong>{summary.complete}</strong>
-              <em>Executed orders</em>
+        <div className="positions-table-wrap positions-book-table-wrap order-book-table-wrap">
+          {visibleRows.length > 0 ? (
+            <>
+              {grouped.open.length > 0 && <OrderSection title="Open orders" orders={grouped.open} />}
+              {grouped.executed.length > 0 && <OrderSection title="Executed orders" orders={grouped.executed} />}
+            </>
+          ) : (
+            <div className="positions-empty order-book-empty">
+              <div className="positions-empty-state">
+                <button
+                  className="positions-empty-action"
+                  type="button"
+                  onClick={load}
+                  disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
+                >
+                  {loading ? <RefreshCw className="spin" size={18} /> : <Info size={18} />}
+                </button>
+                <strong>{loading ? 'Loading orderbook' : rows.length ? 'No orders match your search' : 'No orders'}</strong>
+              </div>
             </div>
-            <div>
-              <span>Pending</span>
-              <strong>{summary.pending}</strong>
-              <em>Open or queued</em>
-            </div>
-            <div>
-              <span className="sell">Rejected / Cancelled</span>
-              <strong className={summary.rejected ? 'down' : ''}>{summary.rejected}</strong>
-              <em>{rows.length} total orders</em>
-            </div>
-          </div>
-        )}
-
-        <div className="positions-table-wrap">
-          <table className="positions-table position-book-table order-book-table">
-            <thead>
-              <tr>
-                {ORDER_COLUMNS.map((column) => (
-                  <th key={column} className={['qty', 'price', 'trigger'].includes(column) ? 'num' : ''}>
-                    {orderLabel(column)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={orderKey(row, index)} className={/sell/i.test(String(orderSide(row))) ? 'position-row-short' : ''}>
-                  {ORDER_COLUMNS.map((column) => (
-                    <td key={column} className={['qty', 'price', 'trigger'].includes(column) ? 'num' : ''}>
-                      {renderOrderCell(row, column)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-              {rows.length === 0 && (
-                <tr>
-                  <td className="positions-empty" colSpan={ORDER_COLUMNS.length}>
-                    <div className="positions-empty-state">
-                      <button
-                        className="positions-empty-action"
-                        type="button"
-                        onClick={load}
-                        disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
-                      >
-                        {loading ? <RefreshCw className="spin" size={18} /> : <Info size={18} />}
-                      </button>
-                      <strong>{loading ? 'Loading orderbook' : 'No orders'}</strong>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-function orderLabel(column) {
-  return {
-    stock: 'Stock Name',
-    product: 'Product Type',
-    qty: 'Qty.',
-    price: 'Price',
-    trigger: 'Trigger',
-    status: 'Status',
-    time: 'Time',
-  }[column] || column
+function OrderSection({ title, orders }) {
+  return (
+    <section className="order-kite-section" aria-label={title}>
+      <header className="order-kite-section-head">
+        <h2>{title} <span>({orders.length})</span></h2>
+      </header>
+      <table className="order-kite-table">
+        <thead>
+          <tr>
+            <th className="col-time">Time</th>
+            <th className="col-type">Type</th>
+            <th className="col-instrument">Instrument</th>
+            <th className="col-product">Product</th>
+            <th className="num col-qty">Qty.</th>
+            <th className="num col-price">Price / Trigger</th>
+            <th className="num col-avg">Avg. price</th>
+            <th className="col-status">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((row, index) => (
+            <OrderRow row={row} key={orderKey(row, index)} />
+          ))}
+        </tbody>
+      </table>
+    </section>
+  )
 }
 
-function renderOrderCell(row, column) {
-  if (column === 'stock') return <OrderStockCell row={row} />
-  if (column === 'product') return <OrderProductCell row={row} />
-  if (column === 'qty') return <OrderQtyCell row={row} />
-  if (column === 'price') return <span className="position-price">{money(valueOf(row, ['price', 'orderprice']))}</span>
-  if (column === 'trigger') return <span className="position-price-muted">{money(valueOf(row, ['triggerprice', 'trigger_price']))}</span>
-  if (column === 'status') return <OrderStatusCell row={row} />
-  if (column === 'time') return <span className="position-price-muted">{valueOf(row, ['updatetime', 'exchtime', 'orderentrytime', 'time'], '-')}</span>
-  return '-'
+function OrderRow({ row }) {
+  const sideRaw = String(orderSide(row) || '').toUpperCase()
+  const sideKind = sideRaw === 'SELL' ? 'sell' : 'buy'
+  const statusMeta = orderStatusMeta(row)
+  const product = bookProductTag(valueOf(row, ['producttype', 'product_type', 'product']))
+  const orderType = orderTypeMeta(valueOf(row, ['ordertype', 'order_type'], ''))
+  const filled = Number(valueOf(row, ['filledshares', 'filled_quantity'], 0)) || 0
+  const qty = Number(valueOf(row, ['quantity', 'qty'], 0)) || 0
+  const price = Number(valueOf(row, ['price', 'orderprice'], 0)) || 0
+  const trigger = Number(valueOf(row, ['triggerprice', 'trigger_price'], 0)) || 0
+  const avg = Number(valueOf(row, ['averageprice', 'average_price'], 0)) || 0
+  const reason = String(valueOf(row, ['text', 'status_message', 'statusmessage'], '')).trim()
+  const time = orderTimeParts(row)
+  const orderId = valueOf(row, ['orderid', 'uniqueorderid'], '')
+
+  return (
+    <tr className={`order-kite-row ${statusMeta.kind}`}>
+      <td className="col-time" title={[time.full, orderId && `Order ${orderId}`].filter(Boolean).join(' — ')}>
+        {time.clock}
+      </td>
+      <td className="col-type">
+        <span className={`order-kite-side ${sideKind}`}>{sideRaw || 'BUY'}</span>
+      </td>
+      <td className="col-instrument"><OrderInstrumentCell row={row} /></td>
+      <td className="col-product">
+        <div className="order-kite-product-cell">
+          <span className="book-tag product">{product}</span>
+          {orderType.label && <span className={`order-kite-variety ${orderType.kind}`}>{orderType.label}</span>}
+        </div>
+      </td>
+      <td className="num col-qty">
+        <span className="order-kite-qty"><em>{filled.toLocaleString('en-IN')}</em> / {qty.toLocaleString('en-IN')}</span>
+      </td>
+      <td className="num col-price">
+        <span className="order-kite-price">
+          {orderMoney(price)}
+          {trigger > 0 && <small> / {orderMoney(trigger)} trg.</small>}
+        </span>
+      </td>
+      <td className="num col-avg">
+        {avg > 0 ? <span className="order-kite-price">{money(avg)}</span> : <span className="position-price-muted">-</span>}
+      </td>
+      <td className="col-status">
+        <span className={`order-kite-status ${statusMeta.kind}`} title={reason || statusMeta.label}>
+          {statusMeta.label}
+          {reason && <Info size={12} />}
+        </span>
+      </td>
+    </tr>
+  )
 }
 
-function OrderStockCell({ row }) {
+// Kite-style instrument line: "SENSEX 9th JUL 74100 PE" with the expiry-day
+// ordinal superscripted and the exchange as a small muted suffix.
+function OrderInstrumentCell({ row }) {
   const symbol = String(valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], '-'))
   const parsed = parseTradingSymbol(symbol)
+  const expiry = splitExpiryDay(parsed.expiry)
   return (
     <div className="position-symbol-line" title={symbol}>
-      <strong>{parsed.root}</strong>
-      {parsed.expiry && <span className="position-expiry">{parsed.expiry}</span>}
-      {parsed.strike && <span className="position-strike">{parsed.strike}</span>}
-      {parsed.optionType && <span className={`book-tag option ${parsed.optionType.toLowerCase()}`}>{parsed.optionType}</span>}
-      {row.exchange && <span className="book-tag exchange">{row.exchange}</span>}
+      <span className="position-symbol-name">
+        {parsed.root || symbol}
+        {expiry
+          ? <> {expiry.day}<sup>{expiry.suffix}</sup> {expiry.month}</>
+          : (parsed.expiry ? ` ${parsed.expiry}` : '')}
+        {parsed.strike ? ` ${parsed.strike}` : ''}
+        {parsed.optionType ? ` ${parsed.optionType}` : ''}
+      </span>
+      {row.exchange && <span className="position-symbol-exchange">{row.exchange}</span>}
     </div>
   )
 }
 
-function OrderProductCell({ row }) {
-  const side = String(orderSide(row)).toUpperCase()
-  const product = compactProductTag(valueOf(row, ['producttype', 'product_type', 'product']))
-  return (
-    <div className="book-product-cell">
-      {side && <span className={`book-tag side ${side === 'SELL' ? 'sell' : 'buy'}`}>{side}</span>}
-      <span className="book-tag product">{product}</span>
-    </div>
-  )
+function splitExpiryDay(expiry) {
+  const match = String(expiry || '').match(/^(\d{1,2})\s+([A-Za-z]{3})/)
+  if (!match) return null
+  const day = Number(match[1])
+  return { day, suffix: ordinalSuffix(day), month: match[2].toUpperCase() }
 }
 
-function OrderQtyCell({ row }) {
-  const qty = Number(valueOf(row, ['quantity', 'qty', 'filledshares', 'unfilledshares'], 0))
-  return (
-    <div className="book-qty-cell">
-      <span>{Number.isFinite(qty) ? qty.toLocaleString('en-IN') : '-'}</span>
-      <small>{valueOf(row, ['ordertype', 'order_type', 'variety'], '')}</small>
-    </div>
-  )
+function ordinalSuffix(day) {
+  if (day % 100 >= 11 && day % 100 <= 13) return 'th'
+  return { 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] || 'th'
 }
 
-function OrderStatusCell({ row }) {
-  const status = String(orderStatus(row) || '-')
-  const failed = /reject|cancel|fail/i.test(status)
-  const ok = /complete|traded|executed/i.test(status)
-  return (
-    <div className="book-status-cell">
-      <span className={`book-status-main ${failed ? 'down' : ok ? 'up' : ''}`}>{status}</span>
-      <small>{valueOf(row, ['orderid', 'uniqueorderid'], '')}</small>
-    </div>
-  )
+function orderStatusMeta(row) {
+  const upper = String(orderStatus(row) || '').trim().toUpperCase()
+  if (/COMPLETE|TRADED|EXECUTED|FILLED/.test(upper)) return { label: upper || 'COMPLETE', kind: 'complete', open: false }
+  if (/REJECT/.test(upper)) return { label: upper || 'REJECTED', kind: 'rejected', open: false }
+  if (/CANCEL/.test(upper)) return { label: upper || 'CANCELLED', kind: 'cancelled', open: false }
+  return { label: upper || 'PENDING', kind: 'open', open: true }
+}
+
+function orderTimeParts(row) {
+  const full = String(valueOf(row, ['updatetime', 'exchtime', 'orderentrytime', 'order_timestamp', 'time'], '')).trim()
+  const clock = full.match(/\d{1,2}:\d{2}(?::\d{2})?/)?.[0] || ''
+  return { clock: clock || full || '-', full }
 }
 
 function orderSide(row) {
@@ -435,6 +511,25 @@ function orderSide(row) {
 
 function orderStatus(row) {
   return valueOf(row, ['status', 'orderstatus', 'order_status', 'text'])
+}
+
+function orderTypeMeta(value) {
+  const raw = String(value || '').trim()
+  const key = raw.toUpperCase().replace(/[\s-]+/g, '_')
+  if (!key) return { label: '', kind: 'market' }
+  if (key === 'MARKET' || key === 'MKT') return { label: 'MARKET', kind: 'market' }
+  if (key === 'LIMIT' || key === 'LMT') return { label: 'LIMIT', kind: 'limit' }
+  if (key === 'SL_M' || key === 'STOPLOSS_MARKET' || key === 'STOP_LOSS_MARKET') return { label: 'SL-M', kind: 'slm' }
+  if (
+    key === 'SL' ||
+    key === 'STOPLOSS_LIMIT' ||
+    key === 'STOP_LOSS_LIMIT' ||
+    key === 'OPLOSS_LIMIT' ||
+    key === 'STOPLOSS'
+  ) {
+    return { label: 'SL-LIMIT', kind: 'sllimit' }
+  }
+  return { label: raw.replace(/_/g, ' '), kind: 'custom' }
 }
 
 function orderKey(row, fallback) {
