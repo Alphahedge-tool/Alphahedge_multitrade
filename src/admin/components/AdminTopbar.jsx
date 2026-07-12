@@ -8,14 +8,24 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
-import { LogOut, Moon, Settings, ShieldCheck, Sun } from 'lucide-react'
+import { LogOut, Moon, Palette, Settings, ShieldCheck, Sun, Terminal } from 'lucide-react'
 import { useState } from 'react'
+
+// Theme cycle metadata: icon + tooltip for each mode. Clicking advances to the
+// "next" mode (Light -> Dark -> AlphaHedge -> Terminal -> Light).
+const THEME_META = {
+  light: { icon: Sun, next: 'Dark mode', accent: false },
+  dark: { icon: Moon, next: 'AlphaHedge theme', accent: true },
+  alphahedge: { icon: Palette, next: 'Terminal theme', accent: true },
+  terminal: { icon: Terminal, next: 'Light mode', accent: true },
+}
 
 function AdminTopbar({ admin, onLogout, themeMode = 'light', onToggleTheme }) {
   const [anchorEl, setAnchorEl] = useState(null)
 
   const handleCloseMenu = () => setAnchorEl(null)
-  const isDark = themeMode === 'dark'
+  const meta = THEME_META[themeMode] || THEME_META.light
+  const ThemeIcon = meta.icon
 
   return (
     <>
@@ -46,15 +56,15 @@ function AdminTopbar({ admin, onLogout, themeMode = 'light', onToggleTheme }) {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
             <IconButton
               size="small"
-              title={isDark ? 'Switch to normal mode' : 'Switch to dark mode'}
-              aria-label={isDark ? 'Switch to normal mode' : 'Switch to dark mode'}
+              title={`Switch to ${meta.next}`}
+              aria-label={`Switch to ${meta.next}`}
               onClick={onToggleTheme}
               sx={{
-                color: isDark ? 'warning.main' : 'text.secondary',
-                bgcolor: isDark ? 'rgba(246, 184, 91, .12)' : 'transparent',
+                color: meta.accent ? 'primary.main' : 'text.secondary',
+                bgcolor: meta.accent ? 'primary.light' : 'transparent',
               }}
             >
-              {isDark ? <Sun size={17} /> : <Moon size={17} />}
+              <ThemeIcon size={17} />
             </IconButton>
 
             <IconButton

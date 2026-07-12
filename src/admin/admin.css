@@ -27,6 +27,14 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .04), 0 3px 10px rgba(0, 0, 0, .04);
   --shadow-pop: 0 4px 20px rgba(0, 0, 0, .12);
   --radius: 4px;
+  /* Canvas chart surfaces (Html5TimeSeriesChart). Light default. */
+  --ao-chart-bg: #FFFFFF;
+  --ao-chart-header: #F7F8FA;
+  --ao-chart-grad-top: #FFFFFF;
+  --ao-chart-grad-bottom: #F5F7FA;
+  --ao-chart-grid: rgba(120,132,148,0.16);
+  --ao-chart-axis: #787b86;
+  --ao-chart-border: #e0e3eb;
 }
 
 [data-theme="dark"] {
@@ -53,6 +61,85 @@
   --ao-border-soft: #2A2A2A;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .28), 0 12px 32px rgba(0, 0, 0, .28);
   --shadow-pop: 0 18px 48px rgba(0, 0, 0, .42);
+  --ao-chart-bg: #16181C;
+  --ao-chart-header: #1B1E23;
+  --ao-chart-grad-top: #191C21;
+  --ao-chart-grad-bottom: #141619;
+  --ao-chart-grid: rgba(42,46,57,0.72);
+  --ao-chart-axis: #787b86;
+  --ao-chart-border: #2a2e39;
+}
+
+/* AlphaHedge theme — blue-charcoal palette ported from the Alphahedgetool
+   project (its "Dhan / Angel-One" dark tokens: bg, border, text, blue accent,
+   bull/bear/warn market colors). Selected via data-theme="alphahedge". */
+[data-theme="alphahedge"] {
+  color-scheme: dark;
+  --ao-blue: #5872E6;              /* --blue */
+  --ao-blue-hover: #3F5BD9;        /* --blue-hover */
+  --ao-blue-surface: rgba(63,91,217,0.18); /* --blue-dim */
+  --ao-blue-bg: #252F3D;           /* --bg-1 */
+  --ao-green: #18A98D;             /* --bull */
+  --ao-green-bg: rgba(24,169,141,0.14);
+  --ao-red: #E06363;               /* --bear */
+  --ao-red-bg: rgba(224,99,99,0.14);
+  --ao-purple: #8E5BD6;            /* --purple */
+  --ao-gold: #FF9933;              /* --warn */
+  --ao-bold: #D7DEE8;              /* --tx-1 */
+  --ao-base: #D7DEE8;              /* --tx-2 */
+  --ao-caption: #9CA8B8;           /* --tx-3 */
+  --ao-placeholder: #6B7686;
+  --ao-bg: #202A38;                /* --bg-0 */
+  --ao-surface: #252F3D;           /* --bg-1 / --bg-3 */
+  --ao-surface-2: #2B3645;         /* --bg-4 */
+  --ao-hover: rgba(63,91,217,0.10);
+  --ao-border: #44505E;            /* --bd-4 */
+  --ao-border-soft: rgba(68,80,94,0.64); /* --bd-2 */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, .5), 0 8px 32px -4px rgba(0, 0, 0, .45);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .5);
+  --ao-chart-bg: #202A38;          /* --bg-0 */
+  --ao-chart-header: #252F3D;      /* --bg-1 */
+  --ao-chart-grad-top: #253040;
+  --ao-chart-grad-bottom: #1E2633;
+  --ao-chart-grid: rgba(68,80,94,0.30); /* Alphahedgetool grid stroke */
+  --ao-chart-axis: #9ca8b8;
+  --ao-chart-border: #44505e;
+}
+
+/* Terminal theme — cool graphite "terminal-pro" palette ported from the
+   Alphahedgetool project (its steel bg/border/text tokens, muted steel-blue
+   accent, teal/salmon market colors). Selected via data-theme="terminal". */
+[data-theme="terminal"] {
+  color-scheme: dark;
+  --ao-blue: #8EA4C2;              /* --blue */
+  --ao-blue-hover: #A3B5CC;        /* --blue-hover */
+  --ao-blue-surface: rgba(142,164,194,0.13); /* --blue-dim */
+  --ao-blue-bg: #14181D;           /* --bg-1 */
+  --ao-green: #12D6A0;             /* --bull */
+  --ao-green-bg: rgba(18,214,160,0.12);
+  --ao-red: #FF5B67;               /* --bear */
+  --ao-red-bg: rgba(255,91,103,0.13);
+  --ao-purple: #B9A27C;            /* --purple (tan) */
+  --ao-gold: #B9A27C;              /* --warn */
+  --ao-bold: #EEF1F5;              /* --tx-1 */
+  --ao-base: #DDE5ED;              /* --tx-2 */
+  --ao-caption: #9AA3AF;           /* --tx-3 */
+  --ao-placeholder: #64707D;       /* --tx-5 */
+  --ao-bg: #101113;                /* --bg-0 */
+  --ao-surface: #171D23;           /* --bg-2 */
+  --ao-surface-2: #202832;         /* --bg-4 */
+  --ao-hover: rgba(142,164,194,0.10);
+  --ao-border: #46515E;            /* --bd-4 */
+  --ao-border-soft: rgba(42,48,56,0.86); /* --bd-2 */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, .6), 0 8px 32px -4px rgba(0, 0, 0, .5);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .6);
+  --ao-chart-bg: #101419;          /* --chart-bg */
+  --ao-chart-header: #14181D;      /* --chart-surface */
+  --ao-chart-grad-top: #161B21;
+  --ao-chart-grad-bottom: #0F1318;
+  --ao-chart-grid: #232A33;        /* terminal-pro --chart-grid */
+  --ao-chart-axis: #787f8a;
+  --ao-chart-border: #2a3038;
 }
 
 /* Custom scrollbars for the admin surface. */

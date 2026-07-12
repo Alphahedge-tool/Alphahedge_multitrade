@@ -12,8 +12,14 @@ import { setFeedAccount } from '../lib/feedRegistry.js';
 route('POST', '/api/upstox/auto-login', async (req) => {
   const b = await readJSON(req);
   try {
+    // The frontend persists the successful Upstox session. Rehydrate it into
+    // the backend's in-memory store before autoLogin, so Feed Master selection
+    // reuses the same access token instead of opening/login-driving Upstox again.
+    const savedSession = b.session || b.client?.session || null;
+    const brokerUserId = savedSession?.userId || b.clientCode || b.userId;
+    if (savedSession?.accessToken) upstox.restoreSession(savedSession, brokerUserId);
     const res = await upstox.autoLogin({
-      userId: b.userId || b.clientCode,
+      userId: brokerUserId,
       state: b.state,
       apiKey: b.apiKey,
       apiSecret: b.apiSecret,

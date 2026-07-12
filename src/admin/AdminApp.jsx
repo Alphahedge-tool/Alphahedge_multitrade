@@ -13,6 +13,9 @@ import GetPositions from './tradepanel/GetPositions'
 import GetOrderBook from './tradepanel/GetOrderBook'
 import OptionChainPage from './tradepanel/OptionChainPage'
 import Placeholder from './pages/Placeholder'
+import StartupGate from './startup/StartupGate'
+import OiPremiumDecay from './market/OiPremiumDecay'
+import RollingStraddle from './market/RollingStraddle'
 import './admin.css'
 import './tradepanel/tradepanel.css'
 
@@ -21,9 +24,11 @@ import './tradepanel/tradepanel.css'
 // sidebar links all resolve without crashing (they get filled in later steps).
 export default function AdminApp() {
   const admin = { username: 'Admin' }
+  const THEME_MODES = ['light', 'dark', 'alphahedge', 'terminal']
   const [themeMode, setThemeMode] = useState(() => {
     try {
-      return localStorage.getItem('alphahedge-theme') === 'dark' ? 'dark' : 'light'
+      const saved = localStorage.getItem('alphahedge-theme')
+      return THEME_MODES.includes(saved) ? saved : 'light'
     } catch {
       return 'light'
     }
@@ -39,12 +44,15 @@ export default function AdminApp() {
     }
   }, [themeMode])
 
-  const toggleTheme = () => setThemeMode((mode) => (mode === 'dark' ? 'light' : 'dark'))
+  // Cycle Light -> Dark (near-black) -> AlphaHedge (blue-charcoal) -> Terminal
+  // (graphite) -> Light.
+  const toggleTheme = () => setThemeMode((mode) => THEME_MODES[(THEME_MODES.indexOf(mode) + 1) % THEME_MODES.length])
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <LocalizationProvider dateAdapter={AdapterDayjs}>
+        <StartupGate>
         <HashRouter>
           <Routes>
             <Route path="/" element={<Navigate to="/admin" replace />} />
@@ -57,6 +65,8 @@ export default function AdminApp() {
               <Route path="masters/feedmaster" element={<Feedmaster />} />
               <Route path="transactions/user-balances" element={<Placeholder title="User Balances" />} />
               <Route path="transactions/sync-net-positions" element={<Placeholder title="Sync Net Positions" />} />
+              <Route path="market/oi-premium-decay" element={<OiPremiumDecay />} />
+              <Route path="market/rolling-straddle" element={<RollingStraddle />} />
               {/* Enter Trade is rendered by the layout keepalive (stays mounted
                   for the live feed); this route is just the address for it. */}
               <Route path="trade-panel/enter-trade" element={null} />
@@ -68,6 +78,7 @@ export default function AdminApp() {
             <Route path="*" element={<Navigate to="/admin" replace />} />
           </Routes>
         </HashRouter>
+        </StartupGate>
       </LocalizationProvider>
     </ThemeProvider>
   )

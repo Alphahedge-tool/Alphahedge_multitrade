@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import AdminTopbar from '../components/AdminTopbar'
 import AdminSidebar from '../components/AdminSidebar'
+import MarketSidebar from '../components/MarketSidebar'
 import EnterTrade from '../tradepanel/EnterTrade'
 
 // AdminLayout is the app shell. It keeps the Enter Trade panel MOUNTED across
@@ -32,6 +33,7 @@ function AdminLayout({ admin, themeMode, onToggleTheme }) {
             <Outlet />
           </div>
         </main>
+        <MarketSidebar />
       </div>
     </div>
   )

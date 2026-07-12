@@ -16,7 +16,21 @@ route('POST', '/api/kotak/auto-login', async (req) => {
     totpSecret: c.totpSecret,
   };
   try {
-    const res = await kotak.autoLogin(cr);
+    const savedSession = c.session || b.session || null;
+    // Kotak's saved trade/session tokens are sufficient for feed and order
+    // calls. Reuse them instead of generating another TOTP login.
+    const res = savedSession?.tradeToken
+      ? {
+          status: true,
+          broker: 'kotak',
+          clientCode: savedSession.ucc || cr.ucc,
+          availableMargin: 0,
+          marginSource: 'saved-session',
+          sessionSource: 'session',
+          session: savedSession,
+          data: { baseUrl: savedSession.baseUrl, greetingName: savedSession.greeting },
+        }
+      : await kotak.autoLogin(cr);
     // Feed Master logins register this account as the feed's Kotak source; the
     // registry change hook then starts the Kotak HSM WebSocket automatically.
     if ((b.feedRegister || c.feedRegister) && res?.session?.tradeToken) {

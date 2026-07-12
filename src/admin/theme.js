@@ -42,13 +42,63 @@ const darkTokens = {
   shadowPop: '0 18px 48px rgba(0, 0, 0, .42)',
 }
 
+// AlphaHedge theme — the blue-charcoal "Dhan / Angel-One" dark palette ported
+// verbatim from the Alphahedgetool project (its default theme's design tokens).
+// Warmer and more blue-tinted than the near-black `darkTokens`.
+const alphahedgeTokens = {
+  blue: '#5872E6',
+  blueHover: '#3F5BD9',
+  blueSurface: 'rgba(63,91,217,0.18)', // --blue-dim
+  blueBg: '#252F3D',
+  green: '#18A98D',                    // --bull
+  red: '#E06363',                      // --bear
+  bold: '#D7DEE8',                     // --tx-1
+  base: '#D7DEE8',                     // --tx-2
+  caption: '#9CA8B8',                  // --tx-3
+  placeholder: '#9CA8B8',              // --tx-4
+  bg: '#202A38',                       // --bg-0
+  surface: '#252F3D',                  // --bg-1 / --bg-3
+  surface2: '#2B3645',                 // --bg-4
+  hover: 'rgba(63,91,217,0.10)',
+  border: '#44505E',                   // --bd-4
+  borderSoft: 'rgba(68,80,94,0.64)',   // --bd-2
+  shadowCard: '0 1px 3px rgba(0,0,0,.5), 0 8px 32px -4px rgba(0,0,0,.45)',
+  shadowPop: '0 18px 48px rgba(0,0,0,.5)',
+}
+
+// Terminal theme — the cool graphite "terminal-pro" palette ported verbatim
+// from Alphahedgetool: near-black steel backgrounds, muted steel-blue accent,
+// warm tan highlights, bright teal / salmon market colors.
+const terminalTokens = {
+  blue: '#8EA4C2',
+  blueHover: '#A3B5CC',
+  blueSurface: 'rgba(142,164,194,0.13)', // --blue-dim
+  blueBg: '#14181D',
+  green: '#12D6A0',                       // --bull
+  red: '#FF5B67',                         // --bear
+  bold: '#EEF1F5',                        // --tx-1
+  base: '#DDE5ED',                        // --tx-2
+  caption: '#9AA3AF',                     // --tx-3
+  placeholder: '#7F8A98',                 // --tx-4
+  bg: '#101113',                          // --bg-0
+  surface: '#171D23',                     // --bg-2
+  surface2: '#202832',                    // --bg-4
+  hover: 'rgba(142,164,194,0.10)',
+  border: '#394450',                      // --bd-3
+  borderSoft: 'rgba(42,48,56,0.86)',      // --bd-2
+  shadowCard: '0 1px 3px rgba(0,0,0,.6), 0 8px 32px -4px rgba(0,0,0,.5)',
+  shadowPop: '0 18px 48px rgba(0,0,0,.6)',
+}
+
+const TOKENS_BY_MODE = { light: lightTokens, dark: darkTokens, alphahedge: alphahedgeTokens, terminal: terminalTokens }
+
 export const getAdminTheme = (mode = 'light') => {
-  const isDark = mode === 'dark'
-  const tokens = isDark ? darkTokens : lightTokens
+  const isDark = mode === 'dark' || mode === 'alphahedge' || mode === 'terminal'
+  const tokens = TOKENS_BY_MODE[mode] || lightTokens
 
   return createTheme({
   palette: {
-    mode,
+    mode: isDark ? 'dark' : 'light',
     primary: { main: tokens.blue, dark: tokens.blueHover, light: tokens.blueSurface },
     success: { main: tokens.green },
     error: { main: tokens.red },
@@ -115,7 +165,9 @@ export const getAdminTheme = (mode = 'light') => {
         },
         containedPrimary: {
           backgroundColor: tokens.blue,
-          color: isDark ? '#0E0F12' : '#fff',
+          // Near-black dark uses a bright accent → dark text; alphahedge's blue
+          // and light both read best with white text on the button.
+          color: mode === 'dark' ? '#0E0F12' : '#fff',
           boxShadow: isDark ? '0 1px 2px rgba(124, 149, 255, .28)' : '0 1px 2px rgba(63, 91, 217, .35)',
           '&:hover': { backgroundColor: tokens.blueHover },
         },

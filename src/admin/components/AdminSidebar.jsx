@@ -25,7 +25,6 @@ import {
   Rss,
   ScrollText,
   Table2,
-  Scale,
   TrendingUp,
   UserRound,
   UsersRound,
@@ -178,16 +177,6 @@ function AdminSidebar() {
 
           <AccordionDetails sx={{ p: 0 }}>
             <List component="div" disablePadding>
-              <ListItemButton component={Link} to="/admin/masters/stocks" sx={navSx('/admin/masters/stocks', true)}>
-                <NavIcon><Scale size={15} /></NavIcon>
-                <ListItemText primary="Stocks Master" />
-              </ListItemButton>
-
-              <ListItemButton component={Link} to="/admin/masters/mutual-funds" sx={navSx('/admin/masters/mutual-funds', true)}>
-                <NavIcon><CircleDollarSign size={15} /></NavIcon>
-                <ListItemText primary="MF Master" />
-              </ListItemButton>
-
               <ListItemButton component={Link} to="/admin/masters/brokers" sx={navSx('/admin/masters/brokers', true)}>
                 <NavIcon><UserRound size={15} /></NavIcon>
                 <ListItemText primary="Broker Master" />

@@ -71,7 +71,7 @@ async function fetchUpstoxChain({ symbol, expiryISO, accessToken, exchange, spot
     };
     byStrike[strike] = { call: pick(row.call_options), put: pick(row.put_options), spot: row.underlying_spot_price };
   }
-  return { byStrike, source: 'ok', spot: body?.data?.[0]?.underlying_spot_price };
+  return { byStrike, source: 'ok', spot: body?.data?.[0]?.underlying_spot_price, underlyingKey: key };
 }
 
 // mergeChain enriches an Angel chain object (with strikes[], callLtp[], etc.)
@@ -107,4 +107,4 @@ export async function buildMergedChain({ angelChain, symbol, expiryISO, upstoxAc
   };
 }
 
-export { fetchUpstoxChain };
+export { fetchUpstoxChain, upstoxUnderlyingKey };

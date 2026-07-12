@@ -14,3 +14,5 @@ import './master.js';
 import './optionChain.js';
 import './feed.js';
 import './wsfeed.js';
+import './oiPremiumDecay.js';
+import './rollingStraddle.js';

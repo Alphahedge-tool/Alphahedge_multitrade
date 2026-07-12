@@ -50,6 +50,18 @@ export function getSession(userId) {
   return sessions.get(userId) || null;
 }
 
+// Restore a token already saved by the frontend. The next autoLogin call
+// validates it with Upstox and reuses it, avoiding a second OAuth/headless
+// login after a page reload or Node backend restart.
+export function restoreSession(session, fallbackUserId = '') {
+  if (!session?.accessToken) return null;
+  const userId = session.userId || fallbackUserId;
+  if (!userId) return null;
+  const restored = { ...session, userId };
+  sessions.set(userId, restored);
+  return restored;
+}
+
 export function loginURL(cr, state) {
   const key = cr.apiKey || process.env.UPSTOX_API_KEY || '';
   if (!key) throw new ApiError('Upstox API key is missing', 400);

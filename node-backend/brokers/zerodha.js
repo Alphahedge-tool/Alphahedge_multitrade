@@ -29,6 +29,17 @@ export function getSession(userId) {
   return sessions.get(userId) || null;
 }
 
+// Rehydrate a browser-persisted Kite session after a backend restart. autoLogin
+// validates it through the margins call before deciding whether OAuth is needed.
+export function restoreSession(session, fallbackUserId = '') {
+  if (!session?.accessToken) return null;
+  const userId = session.userId || fallbackUserId;
+  if (!userId) return null;
+  const restored = { ...session, userId };
+  sessions.set(userId, restored);
+  return restored;
+}
+
 export function credsForState(state) {
   return pending.get(state) || {};
 }

@@ -68,6 +68,15 @@ function registerFeed(body, session) {
 route('POST', '/api/nubra/auto-login', async (req) => {
   const body = await readJSON(req);
   const cr = credsFrom(body);
+  const client = body.client && typeof body.client === 'object' ? body.client : body;
+  const savedSession = client.session || body.session || null;
+
+  // A complete saved Nubra session can be reused directly. This prevents a
+  // second TOTP login when startup hands the same account to Feed Master.
+  if (savedSession?.sessionToken && savedSession?.deviceId) {
+    registerFeed(body, savedSession);
+    return buildLoginResponse(savedSession, 'session');
+  }
 
   if (!cr.totpSecret) {
     // Not set up yet → begin enrollment (sends the SMS OTP).

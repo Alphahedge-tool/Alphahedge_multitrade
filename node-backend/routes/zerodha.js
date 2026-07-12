@@ -137,8 +137,11 @@ route('POST', '/api/zerodha/auto-login', async (req) => {
   const b = await readJSON(req);
   try {
     const state = b.state || `zerodha-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const savedSession = b.session || b.client?.session || null;
+    const brokerUserId = savedSession?.userId || b.clientCode || b.userId;
+    if (savedSession?.accessToken) zerodha.restoreSession(savedSession, brokerUserId);
     const res = await zerodha.autoLogin({
-      userId: b.userId || b.clientCode,
+      userId: brokerUserId,
       state,
       apiKey: b.apiKey,
       apiSecret: b.apiSecret,

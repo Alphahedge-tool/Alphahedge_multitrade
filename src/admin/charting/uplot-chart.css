@@ -1,0 +1,157 @@
+/* UplotChart styling — ported from Alphahedgetool's rolling.css (tooltip,
+   last-value pills, cursor axis labels), mapped onto this project's --ao-*
+   theme variables so it follows light/dark/alphahedge/terminal. */
+
+.uc-card {
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ao-chart-bg);
+}
+
+.uc-head {
+  height: 42px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--ao-border-soft);
+  background: var(--ao-chart-bg);
+}
+
+.uc-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ao-bold);
+}
+
+.uc-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.uc-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ao-caption);
+}
+
+.uc-legend-item i {
+  width: 10px;
+  height: 3px;
+  border-radius: 3px;
+}
+
+.uc-plot {
+  width: 100%;
+  position: relative;
+  background: var(--ao-chart-bg);
+}
+
+/* uPlot surface follows the theme. */
+.uc-plot .uplot,
+.uc-plot .u-wrap,
+.uc-plot .u-over {
+  background: transparent;
+}
+
+.uc-plot .u-cursor-x,
+.uc-plot .u-cursor-y {
+  border-color: rgba(149, 152, 161, 0.62) !important;
+  border-style: dotted !important;
+  border-width: 0 0 1px 1px !important;
+  opacity: 0.9 !important;
+}
+
+/* Crosshair tooltip (Alphahedgetool .roll-chart-tooltip). */
+.uc-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 0;
+  border: 1px solid var(--ao-chart-border, #2a2e39);
+  border-radius: 4px;
+  background: rgba(30, 34, 45, 0.96);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.uc-tip-time {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #d1d4dc;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ao-chart-border, #2a2e39);
+}
+
+.uc-tip-time > span { color: #9da1aa; }
+.uc-tip-time > b { color: #f0f3fa; font-weight: 500; font-family: "Roboto Mono", ui-monospace, monospace; }
+.uc-tip-time small { color: #787b86; font-size: 9px; }
+.uc-tip-values { padding: 6px 10px 8px; }
+.uc-tip-values > div { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 7px; min-height: 21px; }
+.uc-tip-values i { width: 7px; height: 7px; border-radius: 50%; }
+.uc-tip-values span { color: #b2b5be; font-weight: 400; }
+.uc-tip-values b { color: #f0f3fa; font-weight: 500; font-family: "Roboto Mono", ui-monospace, monospace; }
+.uc-tip-values .uc-tip-spread { border-top: 1px solid var(--ao-chart-border, #2a2e39); margin-top: 5px; padding-top: 5px; }
+
+/* Last-value pills on the axes (Alphahedgetool .roll-last-label). */
+.uc-last-label {
+  position: absolute;
+  pointer-events: none;
+  z-index: 15;
+  padding: 2px 6px;
+  font-family: "Roboto Mono", ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  background: var(--ao-chart-bg);
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+/* Cursor axis labels (Alphahedgetool .roll-cursor-axis-label). */
+.uc-cursor-axis-label {
+  position: absolute;
+  pointer-events: none;
+  z-index: 25;
+  padding: 2px 8px;
+  font-family: "Roboto Mono", ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: #d1d4dc !important;
+  background: #4c525e;
+  border: 0;
+  border-radius: 2px;
+}
+
+.uc-cursor-time-label {
+  position: absolute;
+  z-index: 25;
+  transform: translate(-50%, 1px);
+  padding: 4px 8px;
+  color: #fff;
+  background: #4c525e;
+  border-radius: 2px;
+  font: 500 11px "Roboto Mono", ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
