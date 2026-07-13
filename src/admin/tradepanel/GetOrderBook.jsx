@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Info, RefreshCw, Search } from 'lucide-react'
 import { apiGet } from '../config/api'
-import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore'
+import {
+  buildClient, getSavedSession, isAngelBroker, isKotakBroker, isZerodhaBroker, saveSession,
+} from '../feedmaster/feedMasterStore'
 import { bookProductTag, parseTradingSymbol } from './symbolParse'
 import { CompactSelect } from './PositionSelect'
+import { useKotakPortfolioStream } from './useKotakPortfolioStream'
 import './tradepanel.css'
 
 function money(value) {
@@ -27,6 +30,12 @@ function valueOf(row, keys, fallback = '') {
   return fallback
 }
 
+function sessionReady(client, broker) {
+  if (broker === 'kotak') return Boolean(client?.session?.tradeToken && client.session.sid && client.session.baseUrl)
+  if (broker === 'zerodha') return Boolean(client?.session?.accessToken)
+  return Boolean(client?.session?.jwtToken)
+}
+
 export default function GetOrderBook() {
   const [users, setUsers] = useState([])
   const [userId, setUserId] = useState('')
@@ -40,11 +49,16 @@ export default function GetOrderBook() {
   const [streamStatus, setStreamStatus] = useState('')
   const [query, setQuery] = useState('')
   const autoLoadedAccountRef = useRef('')
+  const loadRef = useRef(null)
+  const refreshTimerRef = useRef(0)
 
   const selectedConfig = configs.find((config) => String(config.id) === String(configId))
   const selectedBrokerName = selectedConfig?.broker_name || ''
   const selectedIsAngel = isAngelBroker(selectedBrokerName)
   const selectedIsZerodha = isZerodhaBroker(selectedBrokerName)
+  const selectedIsKotak = isKotakBroker(selectedBrokerName)
+  const selectedBroker = selectedIsKotak ? 'kotak' : selectedIsZerodha ? 'zerodha' : 'angel'
+  const selectedIsSupported = selectedIsAngel || selectedIsZerodha || selectedIsKotak
 
   useEffect(() => {
     let cancelled = false
@@ -110,7 +124,7 @@ export default function GetOrderBook() {
       setClient(null)
       if (!configId) return
 
-      if (!selectedIsAngel && !selectedIsZerodha) {
+      if (!selectedIsSupported) {
         setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
         return
       }
@@ -129,8 +143,12 @@ export default function GetOrderBook() {
           setStatus('This Zerodha account is missing API Key / API Secret')
           return
         }
+        if (selectedIsKotak && (!nextClient?.clientCode || !nextClient?.accessToken)) {
+          setStatus('This Kotak account is missing UCC / Access Token')
+          return
+        }
         setClient(nextClient)
-        const loggedIn = selectedIsAngel ? nextClient.session?.jwtToken : nextClient.session?.accessToken
+        const loggedIn = sessionReady(nextClient, selectedBroker)
         setStatus(loggedIn ? '' : 'This account is not logged in. Login from Broker Configuration first.')
       } catch {
         if (!cancelled) setStatus('Failed to load account credentials')
@@ -139,63 +157,68 @@ export default function GetOrderBook() {
 
     hydrateConfig()
     return () => { cancelled = true }
-  }, [configId, selectedBrokerName, selectedIsAngel, selectedIsZerodha])
+  }, [configId, selectedBroker, selectedBrokerName, selectedIsAngel, selectedIsKotak, selectedIsSupported, selectedIsZerodha])
 
   useEffect(() => {
     autoLoadedAccountRef.current = ''
   }, [configId])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options) => {
+    const silent = options?.silent === true
     if (!selectedConfig) {
       setStatus('Select an account first')
       return
     }
-    if (!selectedIsAngel && !selectedIsZerodha) {
+    if (!selectedIsSupported) {
       setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
       return
     }
     if (!client) {
-      setStatus('Angel account credentials are not ready')
+      setStatus(`${selectedBrokerName || 'Broker'} account credentials are not ready`)
       return
     }
-    const loggedIn = selectedIsAngel ? client.session?.jwtToken : client.session?.accessToken
+    const loggedIn = sessionReady(client, selectedBroker)
     if (!loggedIn) {
       setStatus('This account is not logged in. Login from Broker Configuration first.')
       return
     }
 
-    setLoading(true)
-    setStatus('Loading orderbook...')
+    if (!silent) {
+      setLoading(true)
+      setStatus('Loading orderbook...')
+    }
     try {
-      const res = await fetch(selectedIsZerodha ? '/api/zerodha/order-book' : '/api/angel/order-book', {
+      const res = await fetch(`/api/${selectedBroker}/order-book`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`)
-      if (body.session?.jwtToken || body.session?.accessToken) {
+      if (body.session?.jwtToken || body.session?.accessToken || body.session?.tradeToken) {
         saveSession(configId, body.session)
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current))
       }
       const orders = body.orders || []
       setRows(orders)
-      setStatus(orders.length ? `${orders.length} orders` : 'No orders found')
+      if (!silent) setStatus(orders.length ? `${orders.length} orders` : 'No orders found')
     } catch (error) {
-      setStatus(toOrderError(error))
+      if (!silent) setStatus(toOrderError(error))
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel, selectedIsZerodha])
+  }, [client, configId, selectedBroker, selectedBrokerName, selectedConfig, selectedIsSupported])
+
+  useEffect(() => { loadRef.current = load }, [load])
 
   useEffect(() => {
     const accountKey = String(configId || '')
-    const loggedIn = selectedIsAngel ? client?.session?.jwtToken : client?.session?.accessToken
-    if (!accountKey || !selectedConfig || (!selectedIsAngel && !selectedIsZerodha) || !loggedIn || loading) return
+    const loggedIn = sessionReady(client, selectedBroker)
+    if (!accountKey || !selectedConfig || !selectedIsSupported || !loggedIn || loading) return
     if (autoLoadedAccountRef.current === accountKey) return
     autoLoadedAccountRef.current = accountKey
     load()
-  }, [client, configId, load, loading, selectedConfig, selectedIsAngel, selectedIsZerodha])
+  }, [client, configId, load, loading, selectedBroker, selectedConfig, selectedIsSupported])
 
   useEffect(() => {
     if (!selectedIsZerodha || !client?.session?.accessToken) {
@@ -258,6 +281,31 @@ export default function GetOrderBook() {
       stream.close()
     }
   }, [client?.clientCode, client?.session?.accessToken, client?.session?.userId, selectedIsZerodha])
+
+  const scheduleOrderRefresh = useCallback(() => {
+    window.clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = window.setTimeout(() => loadRef.current?.({ silent: true }), 900)
+  }, [])
+  useEffect(() => () => window.clearTimeout(refreshTimerRef.current), [])
+  const kotakStreamStatus = useKotakPortfolioStream({
+    enabled: selectedIsKotak,
+    client,
+    onOrder: useCallback((order) => {
+      const orderId = String(order?.orderid || order?.nOrdNo || '')
+      if (!orderId) return
+      setRows((current) => {
+        const index = current.findIndex((row) => String(row.orderid || row.nOrdNo || '') === orderId)
+        if (index < 0) return [order, ...current]
+        return current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...order } : row))
+      })
+      scheduleOrderRefresh()
+    }, [scheduleOrderRefresh]),
+    onPosition: scheduleOrderRefresh,
+    onResync: useCallback(() => loadRef.current?.({ silent: true }), []),
+  })
+  const liveStreamStatus = selectedIsKotak
+    ? `Kotak portfolio stream ${kotakStreamStatus === 'live' ? 'active' : kotakStreamStatus}`
+    : streamStatus
 
   const summary = useMemo(() => {
     let complete = 0
@@ -342,12 +390,12 @@ export default function GetOrderBook() {
             }))}
           />
 
-          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
+          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsSupported && !client)} type="button">
             {loading ? 'Loading' : 'Get Orderbook'}
           </button>
           {rows.length > 0 && <span className="positions-total order-book-count">{rows.length} Orders</span>}
           {status && <span className="positions-status order-book-status">{status}</span>}
-          {streamStatus && <span className="positions-status order-book-status live">{streamStatus}</span>}
+          {liveStreamStatus && <span className="positions-status order-book-status live">{liveStreamStatus}</span>}
         </div>
 
         <div className="positions-table-wrap positions-book-table-wrap order-book-table-wrap">
@@ -363,7 +411,7 @@ export default function GetOrderBook() {
                   className="positions-empty-action"
                   type="button"
                   onClick={load}
-                  disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
+                  disabled={loading || !selectedConfig || (selectedIsSupported && !client)}
                 >
                   {loading ? <RefreshCw className="spin" size={18} /> : <Info size={18} />}
                 </button>

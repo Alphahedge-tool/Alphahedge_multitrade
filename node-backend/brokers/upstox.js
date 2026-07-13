@@ -14,7 +14,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ApiError } from '../server.js';
+import { ApiError, getPort } from '../server.js';
 import { generateTOTP } from '../lib/totp.js';
 import { setBrokerAccountId, isConfigured } from '../lib/supabaseAdmin.js';
 
@@ -25,8 +25,10 @@ const PROFILE_URL = `${UPSTOX_BASE}/user/profile`;
 const FUNDS_URL = `${UPSTOX_BASE}/user/get-funds-and-margin`;
 
 function redirectURI() {
-  const port = Number(process.env.PORT || 3001);
-  return process.env.UPSTOX_REDIRECT_URI || `http://127.0.0.1:${port}/upstox/callback`;
+  // getPort() is the port actually bound, which may not be the preferred one if
+  // it was occupied. UPSTOX_REDIRECT_URI still wins — it has to match whatever
+  // is registered in the Upstox app.
+  return process.env.UPSTOX_REDIRECT_URI || `http://127.0.0.1:${getPort()}/upstox/callback`;
 }
 
 // In-memory session + pending-state stores (token reuse for the day; state ->

@@ -32,6 +32,14 @@ export function clientCount() {
 export function attachFeedWSS(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/feed' });
 
+  // ws re-emits the HTTP server's errors here, and an unhandled 'error' event
+  // kills the process — which would defeat the EADDRINUSE port retry in
+  // server.js. Listening errors are that server's business, not the WSS's.
+  wss.on('error', (err) => {
+    if (err?.code === 'EADDRINUSE') return;
+    console.error('feed WSS error:', err?.message || err);
+  });
+
   wss.on('connection', (sock) => {
     const client = { sock, keys: new Map() };
     clients.add(client);

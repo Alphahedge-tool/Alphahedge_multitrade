@@ -16,12 +16,15 @@
 // Auth: the Trade token (tradeApiValidate) as jwt + its sid.
 
 import WebSocket from 'ws';
-import { BaseAdapter, MODE_DEPTH } from '../baseAdapter.js';
+import { BaseAdapter, MODE_DEPTH, subKey } from '../baseAdapter.js';
 
 const HSM_URL = process.env.KOTAK_HSM_URL || 'wss://mlhsm.kotaksecurities.com';
+const MAX_INSTRUMENTS = 200;
+const MAX_PER_FRAME = 100;
+const MAX_CHANNELS = 16;
 const TRASH = -2147483648;
 
-const TYPES = { CONNECTION: 1, ACK: 3, SUBSCRIBE: 4, UNSUBSCRIBE: 5, DATA: 6 };
+const TYPES = { CONNECTION: 1, THROTTLE: 2, ACK: 3, SUBSCRIBE: 4, UNSUBSCRIBE: 5, DATA: 6 };
 const SNAP = 83;
 const UPDATE = 85;
 const F = { FLOAT32: 1, LONG: 2, DATE: 3, STRING: 4 };
@@ -85,15 +88,15 @@ function withLenPrefix(build) {
   return out;
 }
 
-function connectionRequest(jwt, sid) {
+export function connectionRequest(jwt, sid) {
   return withLenPrefix((w) => {
     w.byte(TYPES.CONNECTION);
     w.byte(3);
     w.byte(1);
-    w.short(jwt.length);
+    w.short(Buffer.byteLength(jwt));
     w.str(jwt);
     w.byte(2);
-    w.short(sid.length);
+    w.short(Buffer.byteLength(sid));
     w.str(sid);
     w.byte(3);
     w.short(6);
@@ -112,7 +115,7 @@ function scripByteArray(scrips, prefix) {
   return Buffer.concat(parts);
 }
 
-function subsRequest(scrips, type, prefix, channel = 1) {
+export function subsRequest(scrips, type, prefix, channel = 1) {
   const arr = scripByteArray(scrips, prefix);
   return withLenPrefix((w) => {
     w.byte(type);
@@ -134,6 +137,34 @@ function ackRequest(msgNum) {
     w.short(4);
     w.int(msgNum);
   });
+}
+
+export function throttleRequest() {
+  return withLenPrefix((w) => {
+    w.byte(TYPES.THROTTLE);
+    w.byte(1);
+    w.byte(1);
+    w.short(4);
+    w.int(0);
+  });
+}
+
+function chunks(items, size = MAX_PER_FRAME) {
+  const out = [];
+  for (let index = 0; index < items.length; index += size) {
+    out.push(items.slice(index, index + size));
+  }
+  return out;
+}
+
+export function subscriptionRequests(scrips, { unsubscribe = false, prefix = 'sf', channel = 1 } = {}) {
+  const type = unsubscribe ? TYPES.UNSUBSCRIBE : TYPES.SUBSCRIBE;
+  return chunks(scrips).map((batch, index) => subsRequest(
+    batch,
+    type,
+    prefix,
+    ((channel - 1 + index) % MAX_CHANNELS) + 1,
+  ));
 }
 
 // ── adapter ─────────────────────────────────────────────────────────────────
@@ -222,6 +253,7 @@ export class KotakAdapter extends BaseAdapter {
       }
       try {
         conn.ping();
+        conn.send(throttleRequest());
       } catch {
         this._stopPing();
       }
@@ -237,6 +269,21 @@ export class KotakAdapter extends BaseAdapter {
 
   // Non-numeric tokens are index names ("Nifty 50") on the index feed; numeric
   // tokens are scrips (quote feed, plus depth feed in mode 3).
+  subscribe(instruments, mode) {
+    let available = Math.max(0, MAX_INSTRUMENTS - this.subs.size);
+    const accepted = [];
+    for (const inst of instruments || []) {
+      if (!inst?.token) continue;
+      const key = subKey(String(inst.exchange || '').toUpperCase(), String(inst.token));
+      if (this.subs.has(key)) accepted.push(inst);
+      else if (available > 0) {
+        accepted.push(inst);
+        available -= 1;
+      }
+    }
+    return super.subscribe(accepted, mode);
+  }
+
   _subscribe(instruments, mode) {
     this._sendSubs(instruments, mode, false);
   }
@@ -254,12 +301,17 @@ export class KotakAdapter extends BaseAdapter {
       if (/^\d+$/.test(String(inst.token))) scrips.push({ scrip, mode: inst.mode ?? mode });
       else idx.push(scrip);
     }
-    const type = unsub ? TYPES.UNSUBSCRIBE : TYPES.SUBSCRIBE;
-    if (idx.length) this._send(subsRequest(idx, type, 'if'));
+    let channel = 1;
+    const indexFrames = subscriptionRequests(idx, { unsubscribe: unsub, prefix: 'if', channel });
+    for (const frame of indexFrames) this._send(frame);
+    channel = ((channel - 1 + indexFrames.length) % MAX_CHANNELS) + 1;
     if (scrips.length) {
-      this._send(subsRequest(scrips.map((s) => s.scrip), type, 'sf'));
+      const quoteFrames = subscriptionRequests(scrips.map((s) => s.scrip), { unsubscribe: unsub, prefix: 'sf', channel });
+      for (const frame of quoteFrames) this._send(frame);
+      channel = ((channel - 1 + quoteFrames.length) % MAX_CHANNELS) + 1;
       const depth = scrips.filter((s) => s.mode === MODE_DEPTH).map((s) => s.scrip);
-      if (depth.length) this._send(subsRequest(depth, type, 'dp'));
+      const depthFrames = subscriptionRequests(depth, { unsubscribe: unsub, prefix: 'dp', channel });
+      for (const frame of depthFrames) this._send(frame);
     }
   }
 
@@ -275,12 +327,6 @@ export class KotakAdapter extends BaseAdapter {
     } catch {
       /* reconnect flow re-subscribes */
     }
-  }
-
-  _flushPending() {
-    const frames = this.pending;
-    this.pending = [];
-    for (const f of frames) this._send(f);
   }
 
   // ── binary parse ──────────────────────────────────────────────────────────
@@ -315,8 +361,9 @@ export class KotakAdapter extends BaseAdapter {
       this.reconnectAttempts = 0;
       this.cnAcked = true;
       this.setStatus(true, 'Kotak feed connected');
-      // Re-subscribe everything we track (reconnect) + anything queued.
-      this._flushPending();
+      // Pending frames describe older incremental states. Rebuild one exact
+      // subscription set to avoid sending every initial subscription twice.
+      this.pending = [];
       const subs = this.allSubs();
       if (subs.length) this._sendSubs(subs.map((s) => ({ ...s })), undefined, false);
     } else {
@@ -374,6 +421,7 @@ export class KotakAdapter extends BaseAdapter {
           else if (fid === 54) topic.tsym = sval;
         }
         this._publishTopic(topic);
+        pos = start + subLen;
       } else if (kind === UPDATE) {
         const topicId = buf.readInt32BE(pos);
         pos += 4;
@@ -384,6 +432,7 @@ export class KotakAdapter extends BaseAdapter {
         }
         pos = this._readLongFields(buf, pos, topic);
         this._publishTopic(topic);
+        pos = start + subLen;
       } else {
         pos = start + subLen; // unknown sub-message: skip cleanly
       }

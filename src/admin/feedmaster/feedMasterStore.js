@@ -63,6 +63,7 @@ export function saveFeedState(state) {
 // login client the Node auto-login routes expect, for any broker.
 export function buildClient(config, session = null) {
   if (!config) return null
+  const brokerPath = brokerApiPath(config.broker_name)
   return {
     enabled: true,
     broker: config.broker_name,
@@ -71,7 +72,9 @@ export function buildClient(config, session = null) {
     clientCode: config.account_id,
     apiKey: config.app_key,
     apiSecret: config.app_secret,
-    accessToken: config.app_key || config.app_secret,
+    // Kotak stores NeoFinKey/Access Token in app_secret; app_key is unused for
+    // that broker. Other integrations retain their existing key-first mapping.
+    accessToken: brokerPath === 'kotak' ? (config.app_secret || config.app_key) : (config.app_key || config.app_secret),
     ucc: config.account_id,
     pin: config.pin,
     mpin: config.pin,
@@ -128,6 +131,10 @@ export function isAngelBroker(name = '') {
 export function isZerodhaBroker(name = '') {
   const n = String(name).toLowerCase().replace(/\s/g, '')
   return n.includes('zerodha') || n.includes('kite')
+}
+export function isKotakBroker(name = '') {
+  const normalized = String(name).toLowerCase().replace(/\s/g, '')
+  return normalized.includes('kotak') || normalized.includes('neo')
 }
 export function buildAngelClient(config, _user, session = null) {
   return buildClient(config, session)

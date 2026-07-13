@@ -22,12 +22,30 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Cache dir: node-backend/master/cache/{broker}.json
 const CACHE_DIR = process.env.MASTER_CACHE_DIR || path.resolve(HERE, 'cache');
 const TTL_MS = 20 * 60 * 60 * 1000; // 20h — masters change daily
+const CACHE_VERSION = 2; // broker-aware canonical/segment normalization
 
 // Per broker: { rows: [...], byKey: Map("SYMBOL|EXCHANGE" -> row), loadedAt }
 const brokers = new Map();
 
 function keyOf(symbol, exchange) {
   return `${String(symbol).toUpperCase()}|${String(exchange || '').toUpperCase()}`;
+}
+
+function brokerKeyOf(symbol, exchange) {
+  return `${String(symbol || '').toUpperCase()}|${String(exchange || '').toLowerCase()}`;
+}
+
+function indexes(rows) {
+  const byKey = new Map();
+  const byBrokerKey = new Map();
+  for (const row of rows || []) {
+    if (row.symbol) byKey.set(keyOf(row.symbol, row.exchange), row);
+    if (row.brsymbol) {
+      byBrokerKey.set(brokerKeyOf(row.brsymbol, row.brexchange || row.segment), row);
+      byBrokerKey.set(brokerKeyOf(row.brsymbol, row.exchange), row);
+    }
+  }
+  return { byKey, byBrokerKey };
 }
 
 function ensureCacheDir() {
@@ -41,16 +59,12 @@ function cacheFile(broker) {
 // setMaster installs a broker's normalized rows, builds the lookup index, and
 // caches to disk. Called by each broker's loader.
 export function setMaster(broker, rows) {
-  const byKey = new Map();
-  for (const r of rows) {
-    if (r.symbol) byKey.set(keyOf(r.symbol, r.exchange), r);
-  }
-  const entry = { rows, byKey, loadedAt: Date.now() };
+  const entry = { rows, ...indexes(rows), loadedAt: Date.now() };
   brokers.set(broker, entry);
 
   try {
     ensureCacheDir();
-    fs.writeFileSync(cacheFile(broker), JSON.stringify({ loadedAt: entry.loadedAt, rows }));
+    fs.writeFileSync(cacheFile(broker), JSON.stringify({ version: CACHE_VERSION, loadedAt: entry.loadedAt, rows }));
   } catch {
     /* cache write is best-effort */
   }
@@ -62,10 +76,9 @@ export function loadFromCache(broker) {
   try {
     const raw = fs.readFileSync(cacheFile(broker), 'utf8');
     const parsed = JSON.parse(raw);
+    if (parsed.version !== CACHE_VERSION) return false;
     if (!parsed.rows || Date.now() - (parsed.loadedAt || 0) > TTL_MS) return false;
-    const byKey = new Map();
-    for (const r of parsed.rows) if (r.symbol) byKey.set(keyOf(r.symbol, r.exchange), r);
-    brokers.set(broker, { rows: parsed.rows, byKey, loadedAt: parsed.loadedAt });
+    brokers.set(broker, { rows: parsed.rows, ...indexes(parsed.rows), loadedAt: parsed.loadedAt });
     return true;
   } catch {
     return false;
@@ -83,6 +96,14 @@ export function resolve(broker, symbol, exchange) {
   const e = brokers.get(broker);
   if (!e) return null;
   return e.byKey.get(keyOf(symbol, exchange)) || null;
+}
+
+// Resolve a broker-native report row (trading symbol + segment) back to the
+// normalized master entry. Kotak portfolio reports omit the market-data token.
+export function resolveBroker(broker, symbol, exchange) {
+  const entry = brokers.get(broker);
+  if (!entry) return null;
+  return entry.byBrokerKey.get(brokerKeyOf(symbol, exchange)) || null;
 }
 
 // getToken is the common shorthand: canonical symbol -> broker token (+ meta).

@@ -140,15 +140,16 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
   async function testLogin(c) {
     setBusy(c.id); setError('')
     try {
+      const path = brokerApiPath(c.broker_name)
       const client = {
-        state: `${brokerApiPath(c.broker_name)}-${c.id}-${Date.now()}`,
+        state: `${path}-${c.id}-${Date.now()}`,
         configId: c.id, // so the resolved account id (e.g. Upstox user_id) saves back
         clientCode: c.account_id, apiKey: c.app_key, apiSecret: c.app_secret,
         pin: c.pin, mpin: c.pin, totpSecret: c.totp_secret, phone: c.phone,
-        mobileNumber: c.phone, ucc: c.account_id, accessToken: c.app_key || c.app_secret,
+        mobileNumber: c.phone, ucc: c.account_id,
+        accessToken: path === 'kotak' ? (c.app_secret || c.app_key) : (c.app_key || c.app_secret),
         autoLogin: true,
       }
-      const path = brokerApiPath(c.broker_name)
       let res = await brokerAutoLogin(path, client)
       if (res.needsLogin && res.loginUrl) {
         const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)

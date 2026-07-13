@@ -6,7 +6,8 @@ import { loadAngelMaster } from './loaders/angel.js';
 import { loadUpstoxMaster } from './loaders/upstox.js';
 import { loadNubraMaster } from './loaders/nubra.js';
 import { loadKotakMaster } from './loaders/kotak.js';
-import { loadFromCache, isFresh, status, resolve, getToken, search } from './store.js';
+import { loadZerodhaMaster } from './loaders/zerodha.js';
+import { loadFromCache, isFresh, status, resolve, resolveBroker, getToken, search } from './store.js';
 
 // Public masters — no auth needed. { broker: loaderFn }
 const PUBLIC_LOADERS = { angel: loadAngelMaster, upstox: loadUpstoxMaster };
@@ -27,12 +28,14 @@ export async function ensurePublicMasters({ force = false } = {}) {
   return results;
 }
 
-// loadSessionMaster loads a broker that needs a live session (Nubra/Kotak).
-// creds: Nubra -> { sessionToken, deviceId }; Kotak -> { accessToken, baseUrl }.
+// loadSessionMaster loads a broker that needs a live session.
+// creds: Nubra -> { sessionToken, deviceId }; Kotak -> { accessToken, baseUrl };
+// Zerodha -> { apiKey, accessToken }.
 export async function loadSessionMaster(broker, creds, { force = false } = {}) {
   if (!force && (isFresh(broker) || loadFromCache(broker))) return 'cached';
   if (broker === 'nubra') return `loaded ${await loadNubraMaster(creds)}`;
   if (broker === 'kotak') return `loaded ${await loadKotakMaster(creds)}`;
+  if (broker === 'zerodha') return `loaded ${await loadZerodhaMaster(creds)}`;
   throw new Error(`Unknown session-master broker: ${broker}`);
 }
 
@@ -46,4 +49,4 @@ export function warmMasters() {
 }
 
 // re-export the store's read API so routes import from one place.
-export { status, resolve, getToken, search };
+export { status, resolve, resolveBroker, getToken, search };

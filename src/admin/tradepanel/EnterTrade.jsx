@@ -4,7 +4,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Crosshair, LoaderCircle, Search, X } from 'lucide-react';
 import Basket from './Basket.jsx';
+import BrokerOrderBar from './BrokerOrderBar.jsx';
 import { useAngelAccount } from './useAngelAccount';
+import { useOrderAccount } from './useOrderAccount';
 import { loginAngelClient, useFeedMasterAccount } from '../feedmaster/feedMasterStore';
 import './tradepanel.css';
 
@@ -15,15 +17,18 @@ import './tradepanel.css';
    ══════════════════════════════════════════════════════════════════════ */
 export default function EnterTrade() {
   const acc = useAngelAccount();
+  const orderAccount = useOrderAccount();
   const feedMaster = useFeedMasterAccount();
   return (
     <div className="trade-panel">
+      <BrokerOrderBar {...orderAccount} />
       <Strategies
         clients={acc.clients}
         demoMode={false}
         feedMasterClient={feedMaster.client}
         onClientSession={acc.handleClientSession}
         onFeedMasterSession={feedMaster.handleSession}
+        orderAccount={orderAccount}
       />
     </div>
   );
@@ -32,7 +37,7 @@ export default function EnterTrade() {
 /* ══════════════════════════════════════════════════════════════════════
    Strategies — basket legs + option chain (port of main.jsx Strategies).
    ══════════════════════════════════════════════════════════════════════ */
-function Strategies({ clients, demoMode, feedMasterClient, onClientSession, onFeedMasterSession }) {
+function Strategies({ clients, demoMode, feedMasterClient, onClientSession, onFeedMasterSession, orderAccount }) {
   const [legs, setLegs] = useState([]);
   const legsRef = useRef([]);
   legsRef.current = legs;
@@ -369,15 +374,21 @@ function Strategies({ clients, demoMode, feedMasterClient, onClientSession, onFe
   }, [calcKey, marginClient, marginNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const placeBasket = useCallback(async () => {
-    const client = marginClientRef.current;
-    if (!client?.session?.jwtToken) throw new Error('Load the option chain on a logged-in account first');
     const selected = legsRef.current.filter((leg) => leg.selected !== false);
     if (!selected.length) throw new Error('Select at least one order');
+    const login = await orderAccount.ensureLogin();
+    const client = login.client;
+    const broker = login.broker;
 
     const legPayload = selected.map((leg) => ({
       token: leg.token,
       symbol: leg.tradingSymbol,
       exchange: leg.exchange,
+      canonicalExchange: leg.exchange,
+      underlying: leg.symbol,
+      expiry: leg.expiry,
+      strike: Number(leg.strike),
+      optionType: leg.optionType,
       qty: leg.qty,
       lotSize: leg.lotSize,
       price: priceFor(leg),
@@ -387,20 +398,19 @@ function Strategies({ clients, demoMode, feedMasterClient, onClientSession, onFe
       orderType: leg.priceType || 'MARKET',
     }));
 
-    const response = await fetch('/api/angel/place-basket', {
+    const response = await fetch(`/api/${broker}/place-basket`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client, legs: legPayload }),
     });
     const body = await response.json().catch(() => ({}));
-    if (body.session?.jwtToken) {
-      setMarginClient((current) => (current ? { ...current, session: body.session } : current));
-      const clientIndex = clients.findIndex((item) => item.clientCode === client.clientCode);
-      if (clientIndex >= 0) onClientSession?.(clientIndex, body.session);
+    if (body.session) orderAccount.handleSession(body.session);
+    if (!response.ok || body.status === false) {
+      const firstError = body.results?.find((result) => !result.status)?.error;
+      throw new Error(firstError || body.message || `HTTP ${response.status}`);
     }
-    if (!response.ok) throw new Error(body.message || `HTTP ${response.status}`);
     return body;
-  }, [clients, onClientSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [orderAccount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasLegs = legs.length > 0;
   const [basketRender, setBasketRender] = useState(hasLegs);
@@ -432,7 +442,7 @@ function Strategies({ clients, demoMode, feedMasterClient, onClientSession, onFe
       {basketRender && (
         <Basket
           legs={legs}
-          name="MY BASKET"
+          name={`MY BASKET · ${(orderAccount.client?.broker || 'SELECT BROKER').toUpperCase()}`}
           className={basketOpen ? 'is-open' : 'is-closing'}
           margin={margin}
           charges={charges}

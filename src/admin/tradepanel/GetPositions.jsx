@@ -4,9 +4,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { Activity, ArrowUpDown, Check, Download, Filter, Flame, Info, Layers, Search, Settings2, X } from 'lucide-react';
 import { apiGet, apiPost } from '../config/api';
-import { buildClient, getSavedSession, isAngelBroker, isZerodhaBroker, saveSession } from '../feedmaster/feedMasterStore';
+import {
+  buildClient, getSavedSession, isAngelBroker, isKotakBroker, isZerodhaBroker, saveSession,
+} from '../feedmaster/feedMasterStore';
 import { bookProductTag, parseTradingSymbol } from './symbolParse';
 import { CompactSelect, PositionSelect } from './PositionSelect';
+import { useBrokerMarketFeed } from './useBrokerMarketFeed';
+import { useKotakPortfolioStream } from './useKotakPortfolioStream';
 import './tradepanel.css';
 
 const POSITION_COLUMNS = ['select', 'product', 'instrument', 'qty', 'avg', 'ltp', 'pnl', 'chg'];
@@ -42,6 +46,36 @@ function pnlOf(row) {
   return Number(row.realised || 0) + Number(row.unrealised || 0);
 }
 
+function brokerSessionReady(client, broker) {
+  if (broker === 'kotak') {
+    return Boolean(client?.session?.tradeToken && client.session.sid && client.session.baseUrl);
+  }
+  if (broker === 'zerodha') return Boolean(client?.session?.accessToken);
+  return Boolean(client?.session?.jwtToken);
+}
+
+function withLivePositionTick(row, ticks) {
+  const quantity = Number(row.netqty || 0);
+  if (quantity === 0) return row;
+  const token = String(row.brokerToken || row.symboltoken || '');
+  const exchange = String(row.feedExchange || row.exchange || '').toUpperCase();
+  const tick = token ? ticks[`${exchange}|${token}`] : null;
+  if (!tick || !(Number(tick.ltp) > 0)) return row;
+  const ltp = Number(tick.ltp);
+  const buy = positionBuyAvg(row);
+  const sell = positionSellAvg(row);
+  const unrealised = quantity > 0
+    ? (ltp - buy) * quantity
+    : (sell - ltp) * Math.abs(quantity);
+  return {
+    ...row,
+    ltp,
+    unrealised,
+    pnl: Number(row.realised || 0) + unrealised,
+    liveDir: tick.dir,
+  };
+}
+
 export default function GetPositions() {
   const [users, setUsers] = useState([]);
   const [userId, setUserId] = useState('');
@@ -64,6 +98,8 @@ export default function GetPositions() {
   const [strategyMode, setStrategyMode] = useState('new'); // 'new' | 'existing'
   const [selectedStrategyCode, setSelectedStrategyCode] = useState('');
   const autoLoadedAccountRef = useRef('');
+  const loadRef = useRef(null);
+  const portfolioTimersRef = useRef([]);
 
   const selectedConfig = configs.find((config) => String(config.id) === String(configId));
   const selectedUser = users.find((user) => String(user.id) === String(userId));
@@ -73,6 +109,9 @@ export default function GetPositions() {
   const selectedBrokerName = selectedConfig?.broker_name || '';
   const selectedIsAngel = isAngelBroker(selectedBrokerName);
   const selectedIsZerodha = isZerodhaBroker(selectedBrokerName);
+  const selectedIsKotak = isKotakBroker(selectedBrokerName);
+  const selectedBroker = selectedIsKotak ? 'kotak' : selectedIsZerodha ? 'zerodha' : 'angel';
+  const selectedIsSupported = selectedIsAngel || selectedIsZerodha || selectedIsKotak;
 
   useEffect(() => {
     let cancelled = false;
@@ -155,7 +194,7 @@ export default function GetPositions() {
       setClient(null);
       if (!configId) return;
 
-      if (!selectedIsAngel && !selectedIsZerodha) {
+      if (!selectedIsSupported) {
         setStatus(`${selectedBrokerName || 'Selected broker'} positions are not wired yet`);
         return;
       }
@@ -174,20 +213,15 @@ export default function GetPositions() {
           setStatus('This Zerodha account is missing API Key / API Secret');
           return;
         }
+        if (selectedIsKotak && (!c.account_id || !(c.app_secret || c.app_key))) {
+          setStatus('This Kotak account is missing UCC / Access Token');
+          return;
+        }
 
         const session = getSavedSession(configId);
-        const nextClient = selectedIsZerodha ? buildClient(c, session) : {
-          enabled: true,
-          alias: `${selectedBrokerName} - ${c.account_id}`,
-          clientCode: c.account_id,
-          apiKey: c.app_key,
-          pin: c.pin,
-          totpSecret: c.totp_secret,
-          loggedIn: !!session?.jwtToken,
-          session,
-        };
+        const nextClient = buildClient(c, session);
         setClient(nextClient);
-        const loggedIn = selectedIsAngel ? session?.jwtToken : session?.accessToken;
+        const loggedIn = brokerSessionReady(nextClient, selectedBroker);
         setStatus(loggedIn ? '' : 'This account is not logged in. Login from Broker Configuration first.');
       } catch {
         if (!cancelled) setStatus('Failed to load account credentials');
@@ -198,69 +232,150 @@ export default function GetPositions() {
     return () => {
       cancelled = true;
     };
-  }, [configId, selectedBrokerName, selectedIsAngel, selectedIsZerodha]);
+  }, [configId, selectedBroker, selectedBrokerName, selectedIsAngel, selectedIsKotak, selectedIsSupported, selectedIsZerodha]);
 
   useEffect(() => {
     autoLoadedAccountRef.current = '';
   }, [configId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options) => {
+    const silent = options?.silent === true;
     if (!selectedConfig) {
       setStatus('Select an account first');
       return;
     }
-    if (!selectedIsAngel && !selectedIsZerodha) {
+    if (!selectedIsSupported) {
       setStatus(`${selectedBrokerName || 'Selected broker'} positions are not wired yet`);
       return;
     }
     if (!client) {
-      setStatus('Angel account credentials are not ready');
+      setStatus(`${selectedBrokerName || 'Broker'} account credentials are not ready`);
       return;
     }
-    const loggedIn = selectedIsAngel ? client.session?.jwtToken : client.session?.accessToken;
+    const loggedIn = brokerSessionReady(client, selectedBroker);
     if (!loggedIn) {
       setStatus('This account is not logged in. Login from Broker Configuration first.');
       return;
     }
-    setLoading(true);
-    setStatus('Loading positions...');
+    if (!silent) {
+      setLoading(true);
+      setStatus('Loading positions...');
+    }
     try {
-      const res = await fetch(selectedIsZerodha ? '/api/zerodha/positions' : '/api/angel/positions', {
+      const res = await fetch(`/api/${selectedBroker}/positions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.status === false) throw new Error(body.message || `HTTP ${res.status}`);
-      if (body.session?.jwtToken || body.session?.accessToken) {
+      if (body.session?.jwtToken || body.session?.accessToken || body.session?.tradeToken) {
         saveSession(configId, body.session);
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current));
       }
       const positions = body.positions || [];
       setRows(positions);
-      setStatus(positions.length ? `${positions.length} positions` : 'No open positions');
+      if (!silent) setStatus(positions.length ? `${positions.length} positions` : 'No open positions');
     } catch (e) {
-      setStatus(toPositionError(e));
+      if (!silent) setStatus(toPositionError(e));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [client, configId, selectedBrokerName, selectedConfig, selectedIsAngel, selectedIsZerodha]);
+  }, [client, configId, selectedBroker, selectedBrokerName, selectedConfig, selectedIsSupported]);
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     const accountKey = String(configId || '');
-    const loggedIn = selectedIsAngel ? client?.session?.jwtToken : client?.session?.accessToken;
-    if (!accountKey || !selectedConfig || (!selectedIsAngel && !selectedIsZerodha) || !loggedIn || loading) return;
+    const loggedIn = brokerSessionReady(client, selectedBroker);
+    if (!accountKey || !selectedConfig || !selectedIsSupported || !loggedIn || loading) return;
     if (autoLoadedAccountRef.current === accountKey) return;
 
     autoLoadedAccountRef.current = accountKey;
     load();
-  }, [client, configId, load, loading, selectedConfig, selectedIsAngel, selectedIsZerodha]);
+  }, [client, configId, load, loading, selectedBroker, selectedConfig, selectedIsSupported]);
 
-  const totalPnl = rows.reduce((sum, r) => sum + pnlOf(r), 0);
-  const longCount = rows.filter((row) => Number(row.netqty || 0) > 0).length;
-  const shortCount = rows.filter((row) => Number(row.netqty || 0) < 0).length;
-  const filterOptions = useMemo(() => buildFilterOptions(rows), [rows]);
-  const visibleRows = useMemo(() => sortPositionRows(filterPositionRows(rows, filters), sort), [rows, filters, sort]);
+  const kotakMarketInstruments = useMemo(() => {
+    if (!selectedIsKotak) return [];
+    return rows
+      .filter((row) => Number(row.netqty || 0) !== 0 && (row.brokerToken || row.symboltoken))
+      .map((row) => ({
+        exchange: row.feedExchange || row.exchange,
+        token: String(row.brokerToken || row.symboltoken),
+        symbol: row.canonicalSymbol || row.tradingsymbol,
+      }));
+  }, [rows, selectedIsKotak]);
+  const { status: marketFeedStatus, ticks: marketTicks } = useBrokerMarketFeed({
+    broker: 'kotak',
+    instruments: kotakMarketInstruments,
+    enabled: selectedIsKotak,
+  });
+  const liveRows = useMemo(
+    () => rows.map((row) => withLivePositionTick(row, marketTicks)),
+    [marketTicks, rows],
+  );
+
+  const schedulePortfolioRefresh = useCallback(() => {
+    portfolioTimersRef.current.forEach(window.clearTimeout);
+    portfolioTimersRef.current = [
+      window.setTimeout(() => loadRef.current?.({ silent: true }), 350),
+      window.setTimeout(() => loadRef.current?.({ silent: true }), 2500),
+    ];
+  }, []);
+  useEffect(() => () => {
+    portfolioTimersRef.current.forEach(window.clearTimeout);
+  }, []);
+  const portfolioStreamStatus = useKotakPortfolioStream({
+    enabled: selectedIsKotak,
+    client,
+    onOrder: useCallback((order) => {
+      const statusText = String(order?.orderstatus || order?.status || '').toLowerCase();
+      if (Number(order?.filledshares || 0) > 0 || statusText.includes('complete') || statusText.includes('traded')) {
+        schedulePortfolioRefresh();
+      }
+    }, [schedulePortfolioRefresh]),
+    onPosition: useCallback((position) => {
+      const symbols = new Set([
+        position?.tradingsymbol, position?.symbolname, position?.sym,
+      ].map((value) => String(value || '').toUpperCase()).filter(Boolean));
+      const exchange = String(position?.exchange || position?.exSeg || '').toUpperCase();
+      const product = String(position?.producttype || position?.prod || '').toUpperCase();
+      setRows((current) => {
+        const index = current.findIndex((row) => {
+          const rowSymbols = [row.tradingsymbol, row.symbolname, row.sym]
+            .map((value) => String(value || '').toUpperCase()).filter(Boolean);
+          const rowExchange = String(row.exchange || row.exSeg || '').toUpperCase();
+          const rowProduct = String(row.producttype || row.prod || '').toUpperCase();
+          return rowSymbols.some((value) => symbols.has(value)) && rowExchange === exchange && rowProduct === product;
+        });
+        if (index < 0) return position ? [position, ...current] : current;
+        const patch = Object.fromEntries(
+          Object.entries(position || {}).filter(([, value]) => value != null && value !== ''),
+        );
+        return current.map((row, rowIndex) => rowIndex === index ? {
+          ...row,
+          ...patch,
+          // HSI position messages do not carry scrip-master identity or LTP.
+          brokerToken: row.brokerToken,
+          brokerExchange: row.brokerExchange,
+          symboltoken: row.symboltoken,
+          feedExchange: row.feedExchange,
+          canonicalSymbol: row.canonicalSymbol,
+          ltp: row.ltp,
+        } : row);
+      });
+      schedulePortfolioRefresh();
+    }, [schedulePortfolioRefresh]),
+    onResync: useCallback(() => loadRef.current?.({ silent: true }), []),
+  });
+
+  const totalPnl = liveRows.reduce((sum, row) => sum + pnlOf(row), 0);
+  const longCount = liveRows.filter((row) => Number(row.netqty || 0) > 0).length;
+  const shortCount = liveRows.filter((row) => Number(row.netqty || 0) < 0).length;
+  const filterOptions = useMemo(() => buildFilterOptions(liveRows), [liveRows]);
+  const visibleRows = useMemo(() => sortPositionRows(filterPositionRows(liveRows, filters), sort), [liveRows, filters, sort]);
   const tableRows = useMemo(() => visibleRows.map((row) => ({ type: 'row', row })), [visibleRows]);
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const togglePositionSelection = useCallback((key) => {
@@ -413,9 +528,19 @@ export default function GetPositions() {
             }))}
           />
 
-          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)} type="button">
+          <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsSupported && !client)} type="button">
             {loading ? 'Loading' : 'Get Positions'}
           </button>
+          {selectedIsKotak && (
+            <>
+              <span className={`live-pill ${marketFeedStatus === 'live' ? 'on' : 'off'}`} title="Kotak HSM market/LTP websocket">
+                <span className="live-dot" />HSM {marketFeedStatus === 'live' ? 'LIVE' : marketFeedStatus === 'connecting' ? 'CONNECTING' : 'OFF'}
+              </span>
+              <span className={`live-pill ${portfolioStreamStatus === 'live' ? 'on' : 'off'}`} title="Kotak HSI private order/position websocket">
+                <span className="live-dot" />PORTFOLIO {portfolioStreamStatus === 'live' ? 'LIVE' : portfolioStreamStatus === 'connecting' ? 'CONNECTING' : 'OFF'}
+              </span>
+            </>
+          )}
           {activeFilterCount > 0 && (
             <button className="positions-clear-filters" type="button" onClick={() => setFilters(defaultPositionFilters)}>
               <X size={14} /> Clear filters
@@ -489,7 +614,7 @@ export default function GetPositions() {
                         className="positions-empty-action"
                         type="button"
                         onClick={load}
-                        disabled={loading || !selectedConfig || ((selectedIsAngel || selectedIsZerodha) && !client)}
+                        disabled={loading || !selectedConfig || (selectedIsSupported && !client)}
                       >
                         <Info size={18} />
                       </button>

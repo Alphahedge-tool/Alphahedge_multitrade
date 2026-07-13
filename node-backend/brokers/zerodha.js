@@ -4,7 +4,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { ApiError } from '../server.js';
+import { ApiError, getPort } from '../server.js';
 import { setBrokerAccountId, isConfigured } from '../lib/supabaseAdmin.js';
 
 const KITE_BASE = 'https://api.kite.trade';
@@ -18,8 +18,10 @@ const POSITIONS_URL = `${KITE_BASE}/portfolio/positions`;
 const HOLDINGS_URL = `${KITE_BASE}/portfolio/holdings`;
 
 function redirectURI() {
-  const port = Number(process.env.PORT || 3001);
-  return process.env.ZERODHA_REDIRECT_URI || `http://127.0.0.1:${port}/zerodha/callback`;
+  // getPort() is the port actually bound, which may not be the preferred one if
+  // it was occupied. ZERODHA_REDIRECT_URI still wins — it has to match whatever
+  // is registered in the Kite app.
+  return process.env.ZERODHA_REDIRECT_URI || `http://127.0.0.1:${getPort()}/zerodha/callback`;
 }
 
 const sessions = new Map();
@@ -413,9 +415,20 @@ export async function placeBasket({ client, legs = [] }) {
     try {
       form = orderForm(leg);
       const raw = await postKiteForm(`${KITE_BASE}/orders/regular`, session, form);
-      results.push({ status: true, orderid: raw?.data?.order_id || '', request: form, raw });
+      results.push({
+        status: true,
+        orderid: raw?.data?.order_id || '',
+        request: form,
+        instrument: leg.resolvedInstrument,
+        raw,
+      });
     } catch (err) {
-      results.push({ status: false, error: err.message || 'Order rejected', request: form || leg });
+      results.push({
+        status: false,
+        error: err.message || 'Order rejected',
+        request: form || leg,
+        instrument: leg.resolvedInstrument,
+      });
     }
   }
   const placed = results.filter((r) => r.status).length;

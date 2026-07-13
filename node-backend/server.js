@@ -9,9 +9,57 @@
 //
 // Run: node --env-file-if-exists=.env node-backend/server.js
 
+import fs from 'node:fs';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PORT || process.env.BACKEND_PORT || 3001);
+
+// If the preferred port is taken (a stale backend, another app), walk upwards to
+// the next free one instead of dying with EADDRINUSE. Set PORT_STRICT=1 to keep
+// the old behaviour and fail hard.
+const PORT_TRIES = Number(process.env.PORT_TRIES || 20);
+const PORT_STRICT = /^(1|true|yes)$/i.test(process.env.PORT_STRICT || '');
+
+// The port actually bound. Everything that needs to build a self-URL (OAuth
+// redirect URIs, logs) must read this, not PORT — they can differ.
+let boundPort = PORT;
+export function getPort() {
+  return boundPort;
+}
+
+// Vite's dev proxy and any tooling discover the live port through this file, so
+// a shifted port doesn't mean hand-editing configs.
+const PORT_FILE = fileURLToPath(new URL('../.backend-port', import.meta.url));
+
+function publishPort(port) {
+  try {
+    fs.writeFileSync(PORT_FILE, String(port));
+  } catch (err) {
+    console.warn(`Could not write ${PORT_FILE}: ${err.message}`);
+    return;
+  }
+
+  // Only remove the file if it still names OUR port — a newer backend may have
+  // claimed it while this one was shutting down.
+  const cleanup = () => {
+    try {
+      if (fs.readFileSync(PORT_FILE, 'utf8').trim() === String(port)) fs.unlinkSync(PORT_FILE);
+    } catch {
+      /* already gone — nothing to clean up */
+    }
+  };
+
+  process.on('exit', cleanup);
+  // Signals don't run 'exit' handlers on their own, and Ctrl-C is how this
+  // server is normally stopped.
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      cleanup();
+      process.exit(0);
+    });
+  }
+}
 
 // --- Route table -------------------------------------------------------------
 // Keyed by "METHOD /path". Handlers are async (req, res, ctx) => any. Returning
@@ -80,7 +128,7 @@ async function handle(req, res) {
     return res.end();
   }
 
-  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const url = new URL(req.url, `http://localhost:${boundPort}`);
   const key = `${req.method} ${url.pathname}`;
   const handler = routes.get(key);
 
@@ -114,13 +162,43 @@ export function createServer() {
   });
 }
 
+// start binds the preferred port, or — if it is occupied — the next free port
+// above it (up to PORT_TRIES attempts). The server object is returned
+// synchronously so callers can attach the WebSocket upgrade handler right away;
+// the retries happen on the same object, before it is ever listening.
 export function start(port = PORT) {
   const server = createServer();
-  server.listen(port, () => {
-    console.log(`Alphahedge Node backend listening on http://localhost:${port}`);
-    console.log(`  health: http://localhost:${port}/api/health`);
+  const first = port;
+  let attempt = 0;
+
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE' || PORT_STRICT || attempt >= PORT_TRIES - 1) {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${first + attempt} is in use and no free port was found. ` +
+          'Free it, or set PORT / PORT_TRIES.');
+      }
+      throw err;
+    }
+    attempt += 1;
+    const next = first + attempt;
+    console.warn(`Port ${first + attempt - 1} in use — trying ${next}…`);
+    server.listen(next);
+  });
+
+  server.on('listening', () => {
+    boundPort = server.address().port;
+    publishPort(boundPort);
+    console.log(`Alphahedge Node backend listening on http://localhost:${boundPort}`);
+    console.log(`  health: http://localhost:${boundPort}/api/health`);
+    if (boundPort !== first) {
+      console.warn(`  note: port ${first} was busy. Broker OAuth redirect URIs registered ` +
+        `against ${first} will not match — set ZERODHA_REDIRECT_URI / UPSTOX_REDIRECT_URI ` +
+        'if you need the OAuth flow on this port.');
+    }
     console.log(`  routes: ${[...routes.keys()].sort().join(', ')}`);
   });
+
+  server.listen(first);
   return server;
 }
 

@@ -3,6 +3,8 @@
 import { route, readJSON, ApiError } from '../server.js';
 import * as zerodha from '../brokers/zerodha.js';
 import { setFeedAccount } from '../lib/feedRegistry.js';
+import { loadSessionMaster } from '../master/manager.js';
+import { resolveOrderBasket } from '../master/orderResolver.js';
 
 const orderPollers = new Map();
 const ORDER_POLL_MS = 3000;
@@ -147,6 +149,13 @@ route('POST', '/api/zerodha/auto-login', async (req) => {
       apiSecret: b.apiSecret,
       configId: b.configId,
     });
+    if (res?.session?.accessToken) {
+      try {
+        res.master = await loadSessionMaster('zerodha', res.session);
+      } catch (masterError) {
+        res.master = `error: ${masterError.message}`;
+      }
+    }
     if (b.feedRegister && res?.status && res.clientCode) {
       setFeedAccount('zerodha', {
         userId: res.clientCode,
@@ -194,7 +203,20 @@ route('POST', '/api/zerodha/margins', async (req) => {
 
 route('POST', '/api/zerodha/place-basket', async (req) => {
   const b = await readJSON(req);
-  const out = await zerodha.placeBasket({ client: b.client || {}, legs: b.legs || [] });
+  const client = b.client || {};
+  const session = zerodha.sessionFromClient(client);
+  try {
+    await loadSessionMaster('zerodha', session);
+  } catch (err) {
+    throw new ApiError(`Zerodha instrument master unavailable: ${err.message}`, 400);
+  }
+  let legs;
+  try {
+    legs = resolveOrderBasket('zerodha', b.legs || []);
+  } catch (err) {
+    throw new ApiError(err.message, 400);
+  }
+  const out = await zerodha.placeBasket({ client: { ...client, session }, legs });
   refreshOrderPoller(out.session?.userId || b.client?.userId || b.client?.clientCode);
   return out;
 });
@@ -233,6 +255,9 @@ async function handleCallback(req, res, { query }) {
 
   try {
     const session = await zerodha.completeCallback(requestToken, state);
+    loadSessionMaster('zerodha', session).catch((err) => {
+      console.log(`Zerodha master load after callback failed: ${err.message}`);
+    });
     success = true;
     detail = session.userId || '';
   } catch (err) {
