@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
-import { autoLogin, canHeadlessLogin } from './zerodha.js';
+import { autoLogin, canHeadlessLogin, logout } from './zerodha.js';
 
 const API_KEY = 'apikey123';
 const API_SECRET = 'apisecret456';
@@ -30,7 +30,7 @@ function fakeKite(opts = {}) {
   const handler = async (url, init = {}) => {
     const u = new URL(url);
     const form = init.body ? Object.fromEntries(new URLSearchParams(init.body)) : {};
-    calls.push({ url, path: u.pathname, form, headers: init.headers || {} });
+    calls.push({ url, path: u.pathname, method: init.method || 'GET', form, headers: init.headers || {} });
 
     // 1. connect/login -> one redirect that attaches a session cookie + sess_id.
     if (u.pathname === '/connect/login' && !u.searchParams.get('sess_id')) {
@@ -65,11 +65,18 @@ function fakeKite(opts = {}) {
       }
       return res({ body: { status: 'success', data: {} } });
     }
+    if (u.pathname === '/session/token' && init.method === 'DELETE') {
+      return res({ body: { status: 'success', data: true } });
+    }
     if (u.pathname === '/session/token') {
       return res({
         body: {
           status: 'success',
-          data: { access_token: 'AT_LIVE', public_token: 'PT', user_id: 'AB1234', user_name: 'Trader' },
+          data: {
+            access_token: 'AT_LIVE', public_token: 'PT', enctoken: 'ENC9',
+            avatar_url: 'http://x/a.png', meta: { demat_consent: 'physical' },
+            user_id: 'AB1234', user_name: 'Trader',
+          },
         },
       });
     }
@@ -135,6 +142,27 @@ test('headless login: password + TOTP -> access token, no browser', async () => 
   );
 });
 
+test('token exchange keeps the official extra fields (enctoken, avatar, meta)', async () => {
+  const kite = fakeKite();
+  const out = await withFakeKite(kite, () => autoLogin(creds({ clientCode: 'MN1234' })));
+  assert.equal(out.session.enctoken, 'ENC9');
+  assert.equal(out.session.avatarUrl, 'http://x/a.png');
+  assert.deepEqual(out.session.meta, { demat_consent: 'physical' });
+});
+
+test('logout hits DELETE /session/token and drops the session', async () => {
+  const kite = fakeKite();
+  await withFakeKite(kite, async () => {
+    const login = await autoLogin(creds({ clientCode: 'OP1234' }));
+    const out = await logout({ session: login.session });
+    assert.equal(out.loggedOut, true);
+    const del = kite.calls.find((c) => c.path === '/session/token' && c.method === 'DELETE');
+    assert.ok(del, 'must call DELETE /session/token');
+    assert.match(del.url, /api_key=/);
+    assert.match(del.url, /access_token=/);
+  });
+});
+
 test('cookies from the login page are replayed on the 2FA calls', async () => {
   const kite = fakeKite();
   await withFakeKite(kite, () => autoLogin(creds({ clientCode: 'CD5678' })));
@@ -184,18 +212,32 @@ test('a never-authorized app raises needsAuthorize instead of a bogus token erro
   assert.ok(kite.find('/api/twofa'), 'must have reached 2FA before the consent screen');
 });
 
-test('falls back to the browser popup when password or TOTP is missing', async () => {
+test('missing creds -> needsCreds with NO popup URL (never a browser fallback)', async () => {
   const kite = fakeKite();
   const out = await withFakeKite(kite, () => autoLogin({ apiKey: API_KEY, apiSecret: API_SECRET, autoLogin: true }));
 
   assert.equal(out.needsLogin, true);
-  assert.match(out.loginUrl, /kite\.zerodha\.com\/connect\/login/);
+  assert.equal(out.needsCreds, true);
+  // No loginUrl: the popup follows the browser's remembered Kite user and could
+  // sign in as the wrong account, so we require creds instead of opening it.
+  assert.equal(out.loginUrl, undefined, 'must NOT offer a browser popup');
   assert.equal(kite.calls.length, 0, 'no headless attempt without creds');
-  // The fallback must name what's missing — a silent popup is what sent us
-  // hunting for a phantom bug when the password was being dropped on save.
+  // Name exactly what's missing so the UI can tell the user what to fill in.
   assert.match(out.reason, /User ID/);
   assert.match(out.reason, /Password/);
   assert.match(out.reason, /TOTP Secret/);
+});
+
+test('the one-time authorize case DOES still get a popup URL', async () => {
+  // Distinct from missing creds: here the account is fully set up, so the single
+  // mandatory app-consent popup is still offered (that click has no headless path).
+  const kite = fakeKite({ pendingAuthorize: true });
+  await withFakeKite(kite, async () => {
+    await assert.rejects(
+      () => autoLogin(creds({ clientCode: 'KL1234' })),
+      (err) => err.needsAuthorize === true && err.status === 428,
+    );
+  });
 });
 
 test('canHeadlessLogin requires auto-login plus user id, password and TOTP', () => {

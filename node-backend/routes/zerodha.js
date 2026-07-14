@@ -219,6 +219,11 @@ route('POST', '/api/zerodha/margins', async (req) => {
   return zerodha.margins(b.client || b, b.segment || '');
 });
 
+route('POST', '/api/zerodha/logout', async (req) => {
+  const b = await readJSON(req);
+  return zerodha.logout(b.client || b);
+});
+
 route('POST', '/api/zerodha/place-basket', async (req) => {
   const b = await readJSON(req);
   const client = b.client || {};

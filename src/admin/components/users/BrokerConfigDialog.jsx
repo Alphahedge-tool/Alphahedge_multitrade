@@ -156,13 +156,28 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
       }
       let res = await brokerAutoLogin(path, client)
       if (res.needsLogin && res.loginUrl) {
-        // The backend tells us when it SKIPPED auto-login and why (missing creds).
+        // A popup is only offered when the backend gives a loginUrl. For Zerodha
+        // that now happens ONLY for the one-time app-authorize consent — never as
+        // a no-cred fallback (that path returns needsCreds with no loginUrl).
         if (res.reason) onToast?.(res.reason)
         const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)
         res = await brokerAutoLogin(path, { ...client, clientCode: account || client.clientCode, userId: account || client.clientCode })
       }
       if (res.needsOtp) onToast?.('Nubra needs one-time OTP — use the OTP flow')
+      // Zerodha with missing creds: no popup — tell the user to fill them in so the
+      // account always logs in headless (and can't grab the wrong Kite user).
+      else if (res.needsCreds) setError(res.reason || 'Add Password + TOTP Secret to log in')
       else if (res.needsLogin) onToast?.(`${BROKERS.find((b) => b.apiPath === path)?.label || c.broker_name} needs browser login`)
+      // For Zerodha the account_id IS the Kite user id, and the browser popup
+      // remembers whoever last logged into kite.zerodha.com — possibly a DIFFERENT
+      // user. Never attach that stranger's session to this row: bail with a hint
+      // to switch users, so FCN242 can't silently end up holding VS0926's session.
+      else if (path === 'zerodha' && c.account_id && res.clientCode &&
+        String(res.clientCode).toUpperCase() !== String(c.account_id).toUpperCase()) {
+        setError(`Logged in as ${res.clientCode}, but this account is ${c.account_id}. ` +
+          `Click “Change user” in the Kite popup and sign in as ${c.account_id} — ` +
+          `or add its Password + TOTP Secret so login skips the popup entirely.`)
+      }
       else {
         onToast?.(`${c.broker_name} logged in — ${res.sessionSource || 'live'}`)
         if (res.session) saveSession(c.id, res.session)

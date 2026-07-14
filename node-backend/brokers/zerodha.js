@@ -181,6 +181,11 @@ export async function exchangeRequestToken(requestToken, cr = {}) {
     exchanges: data.exchanges || [],
     products: data.products || [],
     orderTypes: data.order_types || [],
+    // enctoken signs the private (non-Connect) Kite web endpoints; keep it so the
+    // WS user-stream / any web-parity calls can reuse this same session.
+    enctoken: data.enctoken || '',
+    avatarUrl: data.avatar_url || '',
+    meta: data.meta || {},
     loginAt: data.login_time || now,
     lastUsedAt: now,
   };
@@ -502,14 +507,17 @@ export async function autoLogin({ userId, state, ...cr }) {
   const missing = missingForHeadless(creds);
   if (!missing.length) return headlessLogin(creds);
 
+  // No browser-popup fallback for Zerodha. The popup follows whichever user the
+  // browser last logged into kite.zerodha.com as — a cookie we can't read or set
+  // — so with several accounts it can silently sign in as the wrong one. Headless
+  // posts the exact user_id, so it's the only account-safe path. Require the creds
+  // instead of falling back. (deliberately no loginUrl -> the UI won't open a popup.)
   return {
     status: false,
     needsLogin: true,
+    needsCreds: true,
     broker: 'zerodha',
-    // Say what's missing — otherwise a half-filled account just pops a browser
-    // window with no hint that auto-login was skipped, and why.
-    reason: `Zerodha auto-login needs ${missing.join(', ')} — falling back to browser login`,
-    loginUrl: loginURL(cr, state),
+    reason: `Add ${missing.join(', ')} to this Zerodha account — login is headless, no browser popup.`,
   };
 }
 
@@ -518,6 +526,29 @@ export async function completeCallback(requestToken, state) {
   const session = await exchangeRequestToken(requestToken, cr);
   if (state) pending.delete(state);
   return session;
+}
+
+// logout invalidates the access_token via the official DELETE /session/token,
+// then drops the in-memory session. Per the docs this does NOT sign the user out
+// of Kite web/mobile — it only kills this API session. The local session is
+// cleared even if the remote call fails, so a dead token never lingers.
+export async function logout(client) {
+  const session = sessionFromClient(client);
+  const url = `${TOKEN_URL}?api_key=${encodeURIComponent(session.apiKey)}&access_token=${encodeURIComponent(session.accessToken)}`;
+  try {
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'X-Kite-Version': '3' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || out.status === 'error') {
+      throw new ApiError(out?.message || `Zerodha HTTP ${res.status}`, res.status || 400);
+    }
+  } finally {
+    if (session.userId) sessions.delete(session.userId);
+  }
+  return { status: true, broker: 'zerodha', loggedOut: true, userId: session.userId };
 }
 
 function listData(out) {
