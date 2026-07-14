@@ -34,7 +34,7 @@ function normalizeBroker(name) {
 const FIELDS = {
   angelone: ['account_id', 'pin', 'totp_secret', 'app_key'],
   upstox: ['account_id', 'app_key', 'app_secret', 'pin', 'totp_secret', 'phone'],
-  zerodha: ['account_id', 'app_key', 'app_secret'],
+  zerodha: ['account_id', 'app_key', 'app_secret', 'pin', 'totp_secret'],
   kotak: ['account_id', 'app_secret', 'pin', 'totp_secret', 'phone'],
   nubra: ['pin', 'totp_secret', 'phone'],
 }
@@ -45,7 +45,11 @@ const FIELDS = {
 const LABELS_BY_BROKER = {
   angelone: { account_id: 'Client Code', pin: 'PIN', totp_secret: 'TOTP Secret', app_key: 'API Key' },
   upstox: { account_id: 'User ID', app_key: 'API Key', app_secret: 'API Secret', pin: 'PIN', totp_secret: 'TOTP Secret', phone: 'Phone' },
-  zerodha: { account_id: 'User ID (optional)', app_key: 'API Key', app_secret: 'API Secret' },
+  // Zerodha's Kite password rides in the shared `pin` column — broker_accounts has
+  // no password column, and Zerodha has no PIN, so the slot is free. Fill password
+  // + TOTP secret and login is fully headless; leave them blank and it falls back
+  // to the Kite browser popup.
+  zerodha: { account_id: 'User ID (Kite)', app_key: 'API Key', app_secret: 'API Secret', pin: 'Password', totp_secret: 'TOTP Secret' },
   kotak: { account_id: 'UCC (Client Code)', app_secret: 'Access Token (NeoFinKey)', pin: 'MPIN', totp_secret: 'TOTP Secret', phone: 'Mobile (+91…)' },
   nubra: { pin: 'MPIN', totp_secret: 'TOTP Secret', phone: 'Phone' },
 }
@@ -152,6 +156,8 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
       }
       let res = await brokerAutoLogin(path, client)
       if (res.needsLogin && res.loginUrl) {
+        // The backend tells us when it SKIPPED auto-login and why (missing creds).
+        if (res.reason) onToast?.(res.reason)
         const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)
         res = await brokerAutoLogin(path, { ...client, clientCode: account || client.clientCode, userId: account || client.clientCode })
       }
@@ -192,7 +198,7 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
               <Box key={c.id} sx={{ display: 'flex', alignItems: 'center', gap: 1.5, p: 1.25, mb: 1, border: '1px solid var(--ao-border-soft)', borderRadius: 1 }}>
                 <Chip size="small" label={BROKERS.find((b) => b.id === normalizeBroker(c.broker_name))?.label || c.broker_name} color="primary" variant="outlined" />
                 <Typography sx={{ flex: 1, fontSize: '0.85rem' }}>
-                  {c.account_id || '—'} {c.totp_secret ? '• TOTP set' : ''}
+                  {c.account_id || '—'} {c.pin ? '• Password set' : ''} {c.totp_secret ? '• TOTP set' : ''}
                 </Typography>
                 <Button size="small" variant="outlined" startIcon={<PlugZap size={14} />} disabled={busy === c.id} onClick={() => testLogin(c)}>
                   {busy === c.id ? 'Testing…' : 'Test Login'}
