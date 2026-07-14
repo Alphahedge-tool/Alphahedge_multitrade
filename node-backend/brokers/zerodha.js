@@ -480,7 +480,7 @@ function missingForHeadless(cr = {}) {
   return missing;
 }
 
-export async function autoLogin({ userId, state, ...cr }) {
+export async function autoLogin({ userId, state, manual, ...cr }) {
   if (state) pending.set(state, cr);
 
   const existing = userId && sessions.get(userId);
@@ -499,6 +499,14 @@ export async function autoLogin({ userId, state, ...cr }) {
     } catch {
       sessions.delete(userId);
     }
+  }
+
+  // Manual browser login requested (the "Browser Login" button): skip the headless
+  // attempt entirely and hand back the Kite popup URL. registering the state above
+  // means the callback has the api_secret it needs to exchange the request_token.
+  // This is the path for accounts with no stored TOTP.
+  if (manual) {
+    return { status: false, needsLogin: true, broker: 'zerodha', loginUrl: loginURL(cr, state) };
   }
 
   // Fully-automated path when the account has Auto Login ticked and carries a

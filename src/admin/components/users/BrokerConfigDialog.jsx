@@ -3,7 +3,7 @@ import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, FormControl, IconButton, InputLabel, MenuItem, Select, TextField, Typography,
 } from '@mui/material'
-import { Pencil, PlugZap, Plus, Trash2 } from 'lucide-react'
+import { Globe, Pencil, PlugZap, Plus, Trash2 } from 'lucide-react'
 import { apiGet, apiPost, brokerAutoLogin } from '../../config/api'
 import { openBrokerOAuthPopup, saveSession } from '../../feedmaster/feedMasterStore'
 
@@ -140,51 +140,88 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
     }
   }
 
+  // The login "client" the Node auto-login routes expect, built from a config row.
+  function loginClient(c, path) {
+    return {
+      state: `${path}-${c.id}-${Date.now()}`,
+      configId: c.id, // so the resolved account id (e.g. Upstox user_id) saves back
+      clientCode: c.account_id, apiKey: c.app_key, apiSecret: c.app_secret,
+      pin: c.pin, mpin: c.pin, totpSecret: c.totp_secret, phone: c.phone,
+      mobileNumber: c.phone, ucc: c.account_id,
+      accessToken: path === 'kotak' ? (c.app_secret || c.app_key) : (c.app_key || c.app_secret),
+      autoLogin: true,
+    }
+  }
+
+  // Handle a login response uniformly for both the auto (Test Login) and manual
+  // (Browser Login) paths: OTP prompts, missing-cred prompts, the wrong-account
+  // guard, and finally saving the session. Returns true when a session was saved.
+  async function applyLoginResult(c, res, path) {
+    if (res.needsOtp) { onToast?.('Nubra needs one-time OTP — use the OTP flow'); return false }
+    // Zerodha with missing creds and no popup offered: tell the user what to add.
+    if (res.needsCreds) { setError(res.reason || 'Add Password + TOTP Secret to log in'); return false }
+    if (res.needsLogin) { onToast?.(`${BROKERS.find((b) => b.apiPath === path)?.label || c.broker_name} needs browser login`); return false }
+    // For Zerodha the account_id IS the Kite user id, and the browser popup
+    // remembers whoever last logged into kite.zerodha.com — possibly a DIFFERENT
+    // user. Never attach that stranger's session to a row that names a specific
+    // account: bail with a hint to switch users. (If account_id is blank we accept
+    // whoever logged in and save it back below.)
+    if (path === 'zerodha' && c.account_id && res.clientCode &&
+      String(res.clientCode).toUpperCase() !== String(c.account_id).toUpperCase()) {
+      setError(`Logged in as ${res.clientCode}, but this account is ${c.account_id}. ` +
+        `Click “Change user” in the Kite popup and sign in as ${c.account_id}.`)
+      return false
+    }
+    onToast?.(`${c.broker_name} logged in — ${res.sessionSource || 'live'}`)
+    if (res.session) saveSession(c.id, res.session)
+    // Resolved a real user id that differs from the stored one -> refresh so the
+    // UI shows it (Upstox auto-fills account_id; manual login fills a blank one).
+    if (res.clientCode && res.clientCode !== c.account_id) { await load(); onChanged?.() }
+    return true
+  }
+
   // Test login drives the matching broker's auto-login through the Node backend.
   async function testLogin(c) {
     setBusy(c.id); setError('')
     try {
       const path = brokerApiPath(c.broker_name)
-      const client = {
-        state: `${path}-${c.id}-${Date.now()}`,
-        configId: c.id, // so the resolved account id (e.g. Upstox user_id) saves back
-        clientCode: c.account_id, apiKey: c.app_key, apiSecret: c.app_secret,
-        pin: c.pin, mpin: c.pin, totpSecret: c.totp_secret, phone: c.phone,
-        mobileNumber: c.phone, ucc: c.account_id,
-        accessToken: path === 'kotak' ? (c.app_secret || c.app_key) : (c.app_key || c.app_secret),
-        autoLogin: true,
-      }
+      const client = loginClient(c, path)
       let res = await brokerAutoLogin(path, client)
       if (res.needsLogin && res.loginUrl) {
-        // A popup is only offered when the backend gives a loginUrl. For Zerodha
-        // that now happens ONLY for the one-time app-authorize consent — never as
-        // a no-cred fallback (that path returns needsCreds with no loginUrl).
+        // A popup is only auto-offered when the backend gives a loginUrl. For
+        // Zerodha that's ONLY the one-time app-authorize consent — never a
+        // no-cred fallback (that returns needsCreds with no loginUrl). Manual
+        // browser login is a separate, explicit button (browserLogin).
         if (res.reason) onToast?.(res.reason)
         const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)
         res = await brokerAutoLogin(path, { ...client, clientCode: account || client.clientCode, userId: account || client.clientCode })
       }
-      if (res.needsOtp) onToast?.('Nubra needs one-time OTP — use the OTP flow')
-      // Zerodha with missing creds: no popup — tell the user to fill them in so the
-      // account always logs in headless (and can't grab the wrong Kite user).
-      else if (res.needsCreds) setError(res.reason || 'Add Password + TOTP Secret to log in')
-      else if (res.needsLogin) onToast?.(`${BROKERS.find((b) => b.apiPath === path)?.label || c.broker_name} needs browser login`)
-      // For Zerodha the account_id IS the Kite user id, and the browser popup
-      // remembers whoever last logged into kite.zerodha.com — possibly a DIFFERENT
-      // user. Never attach that stranger's session to this row: bail with a hint
-      // to switch users, so FCN242 can't silently end up holding VS0926's session.
-      else if (path === 'zerodha' && c.account_id && res.clientCode &&
-        String(res.clientCode).toUpperCase() !== String(c.account_id).toUpperCase()) {
-        setError(`Logged in as ${res.clientCode}, but this account is ${c.account_id}. ` +
-          `Click “Change user” in the Kite popup and sign in as ${c.account_id} — ` +
-          `or add its Password + TOTP Secret so login skips the popup entirely.`)
+      await applyLoginResult(c, res, path)
+    } catch (e) { setError(`${c.broker_name}: ${e.message}`) }
+    finally { setBusy('') }
+  }
+
+  // Manual browser login: for accounts WITHOUT a stored password/TOTP (or when the
+  // user simply prefers to type credentials each time). The `manual` flag makes the
+  // backend skip headless and hand back the Kite popup URL; after login the same
+  // account-safety guard applies, so a login as the wrong Kite user is refused
+  // rather than saved to this row.
+  async function browserLogin(c) {
+    setBusy(c.id); setError('')
+    try {
+      const path = brokerApiPath(c.broker_name)
+      const client = { ...loginClient(c, path), manual: true }
+      let res = await brokerAutoLogin(path, client)
+      if (res.needsLogin && res.loginUrl) {
+        // Kite's popup pre-fills whichever user this browser last logged in as —
+        // which may not be this account. We can't change that (no Kite param for
+        // it), so warn the user to switch, naming the account they must pick.
+        if (c.account_id) onToast?.(`In the Kite popup, make sure you're signed in as ${c.account_id} — click “Change user” if it shows someone else.`)
+        const account = await openBrokerOAuthPopup(res.loginUrl, res.broker || path)
+        // The callback already exchanged + cached the session; this fetches it.
+        res = await brokerAutoLogin(path, { ...client, clientCode: account || client.clientCode, userId: account || client.clientCode })
       }
-      else {
-        onToast?.(`${c.broker_name} logged in — ${res.sessionSource || 'live'}`)
-        if (res.session) saveSession(c.id, res.session)
-        // Upstox resolves the real user_id on login and saves it to account_id;
-        // refresh this user's configs so the UI shows the updated account id.
-        if (res.clientCode && res.clientCode !== c.account_id) { await load(); onChanged?.() }
-      }
+      await applyLoginResult(c, res, path)
     } catch (e) { setError(`${c.broker_name}: ${e.message}`) }
     finally { setBusy('') }
   }
@@ -218,6 +255,13 @@ export default function BrokerConfigDialog({ open, user, onClose, onChanged, onT
                 <Button size="small" variant="outlined" startIcon={<PlugZap size={14} />} disabled={busy === c.id} onClick={() => testLogin(c)}>
                   {busy === c.id ? 'Testing…' : 'Test Login'}
                 </Button>
+                {/* Manual browser login — for Zerodha accounts without a stored
+                    TOTP, or when the user prefers to type credentials each time. */}
+                {brokerApiPath(c.broker_name) === 'zerodha' && (
+                  <Button size="small" variant="text" startIcon={<Globe size={14} />} disabled={busy === c.id} onClick={() => browserLogin(c)} title="Log in through the Kite browser popup (no stored TOTP needed)">
+                    Browser Login
+                  </Button>
+                )}
                 <IconButton size="small" onClick={() => startEdit(c)}><Pencil size={15} /></IconButton>
                 <IconButton size="small" onClick={() => remove(c)}><Trash2 size={15} /></IconButton>
               </Box>

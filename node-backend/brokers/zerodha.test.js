@@ -228,6 +228,25 @@ test('missing creds -> needsCreds with NO popup URL (never a browser fallback)',
   assert.match(out.reason, /TOTP Secret/);
 });
 
+test('manual:true skips headless and returns the Kite popup URL (no-TOTP path)', async () => {
+  const kite = fakeKite();
+  // Account has NO password/TOTP, but manual login should still offer the popup.
+  const out = await withFakeKite(kite, () =>
+    autoLogin({ apiKey: API_KEY, apiSecret: API_SECRET, clientCode: 'QR1234', autoLogin: true, manual: true }));
+  assert.equal(out.needsLogin, true);
+  assert.match(out.loginUrl, /kite\.zerodha\.com\/connect\/login/);
+  assert.equal(out.needsCreds, undefined, 'manual login is offered, not a creds prompt');
+  assert.equal(kite.calls.length, 0, 'must not attempt a headless login');
+});
+
+test('manual:true even with full creds goes to the popup, not headless', async () => {
+  const kite = fakeKite();
+  const out = await withFakeKite(kite, () => autoLogin(creds({ clientCode: 'ST1234', manual: true })));
+  assert.equal(out.needsLogin, true);
+  assert.match(out.loginUrl, /connect\/login/);
+  assert.equal(kite.calls.length, 0, 'manual must not run the headless flow');
+});
+
 test('the one-time authorize case DOES still get a popup URL', async () => {
   // Distinct from missing creds: here the account is fully set up, so the single
   // mandatory app-consent popup is still offered (that click has no headless path).
