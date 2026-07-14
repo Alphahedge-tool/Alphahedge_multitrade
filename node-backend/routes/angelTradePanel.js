@@ -14,6 +14,19 @@ import { getMargin, getCharges, placeBasket, book } from '../angel/orders.js';
 // scrip master and one connection pool across the trade panel and the feed.
 import { client, auth, master, feed } from '../angel/singletons.js';
 
+let positionMasterRows = null;
+let positionMasterByToken = new Map();
+let positionMasterBySymbol = new Map();
+
+function positionMasterMaps(rows) {
+  if (rows !== positionMasterRows) {
+    positionMasterRows = rows;
+    positionMasterByToken = new Map(rows.map((row) => [String(row.t), row]));
+    positionMasterBySymbol = new Map(rows.map((row) => [`${String(row.g).toUpperCase()}|${String(row.s).toUpperCase()}`, row]));
+  }
+  return { byToken: positionMasterByToken, bySymbol: positionMasterBySymbol };
+}
+
 // Warm the scrip master on boot (load from disk if fresh, else download).
 master.warm().then(
   () => console.log('Angel scrip master ready'),
@@ -76,8 +89,19 @@ route('POST', '/api/angel/order-book', async (req) =>
   book(client, auth, (await readJSON(req)).client || {}, '/rest/secure/angelbroking/order/v1/getOrderBook', 'orders'));
 route('POST', '/api/angel/trade-book', async (req) =>
   book(client, auth, (await readJSON(req)).client || {}, '/rest/secure/angelbroking/order/v1/getTradeBook', 'trades'));
-route('POST', '/api/angel/positions', async (req) =>
-  book(client, auth, (await readJSON(req)).client || {}, '/rest/secure/angelbroking/order/v1/getPosition', 'positions'));
+route('POST', '/api/angel/positions', async (req) => {
+  const result = await book(client, auth, (await readJSON(req)).client || {}, '/rest/secure/angelbroking/order/v1/getPosition', 'positions');
+  const masterRows = await master.data().catch(() => []);
+  const { byToken, bySymbol } = positionMasterMaps(masterRows);
+  result.positions = result.positions.map((position) => {
+    const token = String(position.symboltoken || position.token || '');
+    const symbolKey = `${String(position.exchange || position.exch_seg || '').toUpperCase()}|${String(position.tradingsymbol || position.symbolname || '').toUpperCase()}`;
+    const instrument = byToken.get(token) || bySymbol.get(symbolKey);
+    if (!instrument) return position;
+    return { ...position, lotsize: Number(instrument.l) || Number(position.lotsize) || 1 };
+  });
+  return result;
+});
 
 // ── live feed: subscribe + basket sync + SSE stream ─────────────────────────
 route('POST', '/api/angel/subscribe', async (req) => {

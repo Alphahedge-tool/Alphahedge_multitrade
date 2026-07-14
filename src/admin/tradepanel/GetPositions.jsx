@@ -11,9 +11,11 @@ import { bookProductTag, parseTradingSymbol } from './symbolParse';
 import { CompactSelect, PositionSelect } from './PositionSelect';
 import { useBrokerMarketFeed } from './useBrokerMarketFeed';
 import { useKotakPortfolioStream } from './useKotakPortfolioStream';
+import { formatLots, positionQuantityBreakdown } from './positionQuantity';
 import './tradepanel.css';
 
 const POSITION_COLUMNS = ['select', 'product', 'instrument', 'qty', 'avg', 'ltp', 'pnl', 'chg'];
+const instrumentLotCache = new Map();
 
 const defaultPositionFilters = {
   symbol: '',
@@ -273,7 +275,7 @@ export default function GetPositions() {
         saveSession(configId, body.session);
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current));
       }
-      const positions = body.positions || [];
+      const positions = await enrichPositionLotSizes(body.positions || [], selectedBroker);
       setRows(positions);
       if (!silent) setStatus(positions.length ? `${positions.length} positions` : 'No open positions');
     } catch (e) {
@@ -376,6 +378,7 @@ export default function GetPositions() {
   const shortCount = liveRows.filter((row) => Number(row.netqty || 0) < 0).length;
   const filterOptions = useMemo(() => buildFilterOptions(liveRows), [liveRows]);
   const visibleRows = useMemo(() => sortPositionRows(filterPositionRows(liveRows, filters), sort), [liveRows, filters, sort]);
+  const quantityOverview = useMemo(() => buildQuantityOverview(liveRows), [liveRows]);
   const tableRows = useMemo(() => visibleRows.map((row) => ({ type: 'row', row })), [visibleRows]);
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
   const togglePositionSelection = useCallback((key) => {
@@ -531,6 +534,35 @@ export default function GetPositions() {
           <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsSupported && !client)} type="button">
             {loading ? 'Loading' : 'Get Positions'}
           </button>
+          {quantityOverview.length > 0 && (
+            <div className="position-quantity-inline" aria-label="Open CE and PE long and short quantity">
+              {quantityOverview.map((group) => (
+                <div className="position-quantity-script" key={group.root}>
+                  <strong className="position-quantity-script-name">{group.root}</strong>
+                  {['CE', 'PE'].map((optionType) => {
+                    const item = group[optionType];
+                    if (!item) return null;
+                    return (
+                      <div className="position-quantity-pill" key={optionType}>
+                        <span className={`position-option-type ${optionType.toLowerCase()}`}>{optionType}</span>
+                        <span className="position-total-long" title="Long position">
+                          <small>L</small>
+                          <b>{compactLots(item.longLots, item.lotSize)}</b>
+                          <em>{item.longQty.toLocaleString('en-IN')} qty</em>
+                        </span>
+                        <i aria-hidden="true" />
+                        <span className="position-total-short" title="Short position">
+                          <small>S</small>
+                          <b>{compactLots(item.shortLots, item.lotSize)}</b>
+                          <em>{item.shortQty.toLocaleString('en-IN')} qty</em>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
           {selectedIsKotak && (
             <>
               <span className={`live-pill ${marketFeedStatus === 'live' ? 'on' : 'off'}`} title="Kotak HSM market/LTP websocket">
@@ -1191,20 +1223,114 @@ function PositionProductCell({ row }) {
 }
 
 function PositionQtyCell({ row }) {
-  const qty = Number(row.netqty || 0);
-  const lotSize = Number(row.lotsize || row.lotSize || row.lot_size || 0) || 0;
-  const absQty = Math.abs(qty);
-  const lots = lotSize > 1 && absQty ? absQty / lotSize : null;
+  const quantity = positionQuantityBreakdown(row);
+  const direction = quantity.netQty > 0 ? 'Long' : quantity.netQty < 0 ? 'Short' : 'Flat';
   return (
     <div className="book-qty-cell">
-      <span className={qty >= 0 ? 'up' : 'down'}>{qty.toLocaleString('en-IN')}</span>
-      {lots != null && (
-        <small className="position-lots-badge">
-          {Number.isInteger(lots) ? lots : lots.toFixed(2)} Lots
-        </small>
-      )}
+      <span className={`position-net-qty ${quantity.netQty >= 0 ? 'up' : 'down'}`}>
+        <b>{direction}</b> {Math.abs(quantity.netQty).toLocaleString('en-IN')} qty
+      </span>
+      <small className="position-qty-breakdown">
+        {quantity.netLots != null && (
+          <b>{formatLots(quantity.netLots)} {Math.abs(quantity.netLots) === 1 ? 'lot' : 'lots'} ×{quantity.lotSize}</b>
+        )}
+        <span>Buy {quantity.buyQty.toLocaleString('en-IN')}</span>
+        <span>Sell {quantity.sellQty.toLocaleString('en-IN')}</span>
+      </small>
     </div>
   );
+}
+
+function compactLots(lots, lotSize) {
+  if (lots == null) return '— lots';
+  const size = lotSize ? ` ×${lotSize}` : '';
+  return `${formatLots(lots)} ${Math.abs(lots) === 1 ? 'lot' : 'lots'}${size}`;
+}
+
+async function enrichPositionLotSizes(rows, broker) {
+  return Promise.all(rows.map(async (row) => {
+    if (Number(row.lotsize || row.lotSize || row.lot_size || 0) > 0) return row;
+    const symbol = String(row.tradingsymbol || row.symbolname || row.symbol || '').trim();
+    const token = String(row.symboltoken || row.instrument_token || row.brokerToken || '').trim();
+    const query = positionMasterQuery(row);
+    if (!query) return row;
+    const cacheKey = `${broker}|${token}|${symbol.toUpperCase()}|${query}`;
+    if (instrumentLotCache.has(cacheKey)) {
+      const cached = instrumentLotCache.get(cacheKey);
+      return cached ? { ...row, ...cached } : row;
+    }
+    try {
+      const response = await fetch(`/api/master/search?broker=${encodeURIComponent(broker)}&q=${encodeURIComponent(query)}&limit=12`);
+      const body = await response.json().catch(() => ({}));
+      const results = Array.isArray(body.results) ? body.results : [];
+      const instrument = results.find((item) => token && String(item.token) === token)
+        || results.find((item) => String(item.brsymbol || '').toUpperCase() === symbol.toUpperCase())
+        || results.find((item) => String(item.symbol || '').toUpperCase() === query);
+      const metadata = instrument && Number(instrument.lotsize) > 0 ? {
+        lotsize: Number(instrument.lotsize),
+        optiontype: row.optiontype || instrument.optionType,
+        expirydate: row.expirydate || instrument.expiry,
+        strikeprice: row.strikeprice ?? instrument.strike,
+        canonicalSymbol: row.canonicalSymbol || instrument.symbol,
+      } : null;
+      instrumentLotCache.set(cacheKey, metadata);
+      return metadata ? { ...row, ...metadata } : row;
+    } catch {
+      return row;
+    }
+  }));
+}
+
+function positionMasterQuery(row) {
+  if (row.canonicalSymbol) return String(row.canonicalSymbol).trim().toUpperCase();
+  const symbol = String(row.tradingsymbol || row.symbolname || row.symbol || '').trim();
+  const parsed = parseTradingSymbol(symbol);
+  const optionType = String(parsed.optionType || row.optiontype || row.optionType || '').toUpperCase();
+  const strike = String(parsed.strike || row.strikeprice || row.strike || '').replace(/\.0+$/, '');
+  const expiry = String(parsed.expiry || row.expirydate || row.expiry || '');
+  const match = expiry.match(/^(\d{1,2})[\s/-]+([A-Za-z]{3})[\s/-]+(\d{2,4})$/);
+  if (!parsed.root || !match || !strike || !['CE', 'PE'].includes(optionType)) return symbol.toUpperCase();
+  const day = String(match[1]).padStart(2, '0');
+  const month = match[2].toUpperCase();
+  const year = String(match[3]).slice(-2);
+  return `${parsed.root}${day}${month}${year}${strike}${optionType}`.toUpperCase();
+}
+
+function buildQuantityOverview(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const parsed = parseTradingSymbol(String(row.tradingsymbol || row.symbolname || row.symbol || ''));
+    const optionType = String(parsed.optionType || row.optiontype || row.optionType || '').toUpperCase();
+    if (!['CE', 'PE'].includes(optionType)) continue;
+    const quantity = positionQuantityBreakdown(row);
+    if (!quantity.netQty) continue;
+    const root = parsed.root || 'Other';
+    const group = groups.get(root) || { root };
+    const option = group[optionType] || {
+      longQty: 0, shortQty: 0, longLots: 0, shortLots: 0,
+      longLotsKnown: true, shortLotsKnown: true, lotSizes: new Set(),
+    };
+    if (quantity.lotSize) option.lotSizes.add(quantity.lotSize);
+    if (quantity.netQty > 0) {
+      option.longQty += quantity.netQty;
+      if (quantity.netLots == null) option.longLotsKnown = false;
+      else option.longLots += quantity.netLots;
+    } else {
+      option.shortQty += Math.abs(quantity.netQty);
+      if (quantity.netLots == null) option.shortLotsKnown = false;
+      else option.shortLots += quantity.netLots;
+    }
+    group[optionType] = option;
+    groups.set(root, group);
+  }
+  return [...groups.values()].sort((a, b) => a.root.localeCompare(b.root)).map((group) => {
+    for (const type of ['CE', 'PE']) {
+      if (group[type] && !group[type].longLotsKnown) group[type].longLots = null;
+      if (group[type] && !group[type].shortLotsKnown) group[type].shortLots = null;
+      if (group[type]) group[type].lotSize = group[type].lotSizes.size === 1 ? [...group[type].lotSizes][0] : 0;
+    }
+    return group;
+  });
 }
 
 function PositionPnlCell({ row }) {

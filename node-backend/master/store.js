@@ -32,20 +32,24 @@ function keyOf(symbol, exchange) {
 }
 
 function brokerKeyOf(symbol, exchange) {
-  return `${String(symbol || '').toUpperCase()}|${String(exchange || '').toLowerCase()}`;
+  return `${String(symbol || '').trim().toUpperCase()}|${String(exchange || '').trim().toLowerCase()}`;
 }
 
 function indexes(rows) {
   const byKey = new Map();
   const byBrokerKey = new Map();
+  const byBrokerSymbol = new Map();
+  const byToken = new Map();
   for (const row of rows || []) {
     if (row.symbol) byKey.set(keyOf(row.symbol, row.exchange), row);
     if (row.brsymbol) {
       byBrokerKey.set(brokerKeyOf(row.brsymbol, row.brexchange || row.segment), row);
       byBrokerKey.set(brokerKeyOf(row.brsymbol, row.exchange), row);
+      byBrokerSymbol.set(String(row.brsymbol).trim().toUpperCase(), row);
     }
+    if (row.token != null && row.token !== '') byToken.set(String(row.token).trim(), row);
   }
-  return { byKey, byBrokerKey };
+  return { byKey, byBrokerKey, byBrokerSymbol, byToken };
 }
 
 function ensureCacheDir() {
@@ -100,10 +104,13 @@ export function resolve(broker, symbol, exchange) {
 
 // Resolve a broker-native report row (trading symbol + segment) back to the
 // normalized master entry. Kotak portfolio reports omit the market-data token.
-export function resolveBroker(broker, symbol, exchange) {
+export function resolveBroker(broker, symbol, exchange, token = '') {
   const entry = brokers.get(broker);
   if (!entry) return null;
-  return entry.byBrokerKey.get(brokerKeyOf(symbol, exchange)) || null;
+  return entry.byBrokerKey.get(brokerKeyOf(symbol, exchange))
+    || (token ? entry.byToken.get(String(token).trim()) : null)
+    || entry.byBrokerSymbol.get(String(symbol || '').trim().toUpperCase())
+    || null;
 }
 
 // getToken is the common shorthand: canonical symbol -> broker token (+ meta).

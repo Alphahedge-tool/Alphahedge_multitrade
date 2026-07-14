@@ -3,7 +3,7 @@
 import { route, readJSON, ApiError } from '../server.js';
 import * as zerodha from '../brokers/zerodha.js';
 import { setFeedAccount } from '../lib/feedRegistry.js';
-import { loadSessionMaster } from '../master/manager.js';
+import { loadSessionMaster, resolveBroker } from '../master/manager.js';
 import { resolveOrderBasket } from '../master/orderResolver.js';
 
 const orderPollers = new Map();
@@ -154,6 +154,8 @@ route('POST', '/api/zerodha/auto-login', async (req) => {
       password: b.password || b.pin || '',
       totpSecret: b.totpSecret || '',
       autoLogin: b.autoLogin !== false,
+      // "Browser Login" button: skip headless, go straight to the Kite popup.
+      manual: b.manual === true,
     });
     if (res?.session?.accessToken) {
       try {
@@ -206,7 +208,29 @@ route('POST', '/api/zerodha/trade-book', async (req) => {
 
 route('POST', '/api/zerodha/positions', async (req) => {
   const b = await readJSON(req);
-  return zerodha.positions(b.client || b);
+  const client = b.client || b;
+  const session = zerodha.sessionFromClient(client);
+  await loadSessionMaster('zerodha', session).catch(() => null);
+  const result = await zerodha.positions(client);
+  result.positions = result.positions.map((position) => {
+    const instrument = resolveBroker(
+      'zerodha',
+      position.tradingsymbol,
+      position.exchange,
+      position.symboltoken || position.instrument_token,
+    );
+    if (!instrument) return position;
+    return {
+      ...position,
+      lotsize: Number(instrument.lotsize) || Number(position.lotsize) || 1,
+      optiontype: position.optiontype || instrument.optionType,
+      expirydate: position.expirydate || instrument.expiry,
+      strikeprice: position.strikeprice ?? instrument.strike,
+      canonicalSymbol: instrument.symbol,
+      brokerToken: String(instrument.token || position.symboltoken || ''),
+    };
+  });
+  return result;
 });
 
 route('POST', '/api/zerodha/holdings', async (req) => {

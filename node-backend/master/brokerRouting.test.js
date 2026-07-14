@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { parseBrokerCSV } from './csv.js';
 import { normalizeKotakRows } from './loaders/kotak.js';
 import { normalizeZerodhaRows } from './loaders/zerodha.js';
-import { setMaster } from './store.js';
+import { resolveBroker, setMaster } from './store.js';
 import { canonicalForLeg, resolveOrderBasket } from './orderResolver.js';
 
 test('Kotak comma CSV keeps the legacy semicolon header and normalizes broker identifiers', () => {
@@ -42,6 +42,20 @@ test('Zerodha master preserves tradingsymbol and instrument token separately', (
   assert.equal(row.token, '98765');
   assert.equal(row.brsymbol, 'NIFTY30JUL2625000CE');
   assert.equal(row.brexchange, 'NFO');
+});
+
+test('position metadata resolves lot size by symbol, exchange or instrument token', () => {
+  setMaster('zerodha-position-test', [{
+    symbol: 'NIFTY14JUL2623750PE',
+    exchange: 'NFO',
+    token: '13147650',
+    brsymbol: 'NIFTY2671423750PE',
+    brexchange: 'NFO',
+    lotsize: 65,
+  }]);
+  assert.equal(resolveBroker('zerodha-position-test', ' NIFTY2671423750PE ', 'nfo').lotsize, 65);
+  assert.equal(resolveBroker('zerodha-position-test', 'unknown', '', '13147650').lotsize, 65);
+  assert.equal(resolveBroker('zerodha-position-test', 'NIFTY2671423750PE', '').lotsize, 65);
 });
 
 test('order basket replaces a foreign token from the selected broker master', () => {

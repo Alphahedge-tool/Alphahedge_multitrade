@@ -108,6 +108,7 @@ route('POST', '/api/kotak/positions', async (req) => {
       'kotak',
       position.tradingsymbol,
       position.exSeg || position.exchange,
+      position.brokerToken || position.symboltoken || position.tok,
     );
     if (!instrument) {
       return {
