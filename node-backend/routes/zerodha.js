@@ -148,6 +148,12 @@ route('POST', '/api/zerodha/auto-login', async (req) => {
       apiKey: b.apiKey,
       apiSecret: b.apiSecret,
       configId: b.configId,
+      // Headless auto-login creds. broker_accounts has no password column, so the
+      // Kite password is stored in the shared `pin` one (Zerodha has no PIN).
+      clientCode: b.clientCode || '',
+      password: b.password || b.pin || '',
+      totpSecret: b.totpSecret || '',
+      autoLogin: b.autoLogin !== false,
     });
     if (res?.session?.accessToken) {
       try {
@@ -166,6 +172,18 @@ route('POST', '/api/zerodha/auto-login', async (req) => {
     }
     return res;
   } catch (err) {
+    // First-ever connection: 2FA passed but Kite is holding on the one-time app
+    // Authorize screen. Don't surface this as an error — hand back a popup URL so
+    // the user clicks Authorize once, exactly like the plain needsLogin fallback.
+    if (err.needsAuthorize) {
+      return {
+        status: false,
+        needsLogin: true,
+        broker: 'zerodha',
+        reason: err.message,
+        loginUrl: zerodha.loginURL({ apiKey: b.apiKey }, b.state || ''),
+      };
+    }
     if (err instanceof ApiError) throw err;
     throw new ApiError(err.message || 'Zerodha login failed', err.status || 500);
   }
@@ -199,6 +217,11 @@ route('POST', '/api/zerodha/holdings', async (req) => {
 route('POST', '/api/zerodha/margins', async (req) => {
   const b = await readJSON(req);
   return zerodha.margins(b.client || b, b.segment || '');
+});
+
+route('POST', '/api/zerodha/logout', async (req) => {
+  const b = await readJSON(req);
+  return zerodha.logout(b.client || b);
 });
 
 route('POST', '/api/zerodha/place-basket', async (req) => {

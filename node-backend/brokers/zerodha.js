@@ -1,14 +1,21 @@
 // Zerodha Kite Connect adapter.
 // Flow: build Kite login URL -> browser redirects with request_token -> exchange
 // request_token for access_token using SHA-256(api_key + request_token + secret).
+//
+// The browser step can also be driven headlessly — see the auto-login section
+// below — so an account with a password + TOTP secret never shows a popup.
 
 import { createHash } from 'node:crypto';
 
 import { ApiError, getPort } from '../server.js';
 import { setBrokerAccountId, isConfigured } from '../lib/supabaseAdmin.js';
+import { generateTOTP, nearWindowEdge, msUntilNextWindow } from '../lib/totp.js';
 
 const KITE_BASE = 'https://api.kite.trade';
-const LOGIN_URL = 'https://kite.zerodha.com/connect/login';
+const KITE_WEB = 'https://kite.zerodha.com';
+const LOGIN_URL = `${KITE_WEB}/connect/login`;
+const WEB_LOGIN_URL = `${KITE_WEB}/api/login`;
+const TWOFA_URL = `${KITE_WEB}/api/twofa`;
 const TOKEN_URL = `${KITE_BASE}/session/token`;
 const PROFILE_URL = `${KITE_BASE}/user/profile`;
 const MARGINS_URL = `${KITE_BASE}/user/margins`;
@@ -174,6 +181,11 @@ export async function exchangeRequestToken(requestToken, cr = {}) {
     exchanges: data.exchanges || [],
     products: data.products || [],
     orderTypes: data.order_types || [],
+    // enctoken signs the private (non-Connect) Kite web endpoints; keep it so the
+    // WS user-stream / any web-parity calls can reuse this same session.
+    enctoken: data.enctoken || '',
+    avatarUrl: data.avatar_url || '',
+    meta: data.meta || {},
     loginAt: data.login_time || now,
     lastUsedAt: now,
   };
@@ -230,6 +242,244 @@ function applyProfile(session, profile = {}) {
   return session;
 }
 
+// --- Headless auto-login (no popup, no browser) ------------------------------
+// Kite's web login is a plain cookie + JSON flow, so the whole thing runs on
+// fetch — unlike Upstox, which needs Selenium. Steps:
+//
+//   1. GET /connect/login?v=3&api_key=..  Follow the redirects; the page we land
+//      on carries the sess_id Kite ties this attempt to, and sets the cookies.
+//   2. POST /api/login  {user_id, password}            -> request_id
+//   3. POST /api/twofa  {user_id, request_id, TOTP}    -> cookies become authorized
+//   4. GET the step-1 URL again with &skip_session=true. Now that the cookies are
+//      authorized, Kite redirects straight to the app's redirect_uri carrying
+//      ?request_token=..., which we pluck off the Location header.
+//   5. Exchange that request_token for an access_token — the same call the popup
+//      flow makes, so everything downstream is identical.
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A minimal cookie jar. fetch() drops Set-Cookie between calls, but Kite carries
+// the whole login across cookies, so we harvest and replay them by hand.
+function cookieJar() {
+  const jar = new Map();
+  return {
+    header() {
+      return [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    },
+    names() {
+      return [...jar.keys()];
+    },
+    absorb(res) {
+      const lines =
+        typeof res.headers.getSetCookie === 'function'
+          ? res.headers.getSetCookie()
+          : [res.headers.get('set-cookie')].filter(Boolean);
+      for (const line of lines) {
+        const pair = line.split(';')[0];
+        const eq = pair.indexOf('=');
+        if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+      }
+    },
+  };
+}
+
+function jarHeaders(jar, extra = {}) {
+  const cookie = jar.header();
+  return { 'User-Agent': USER_AGENT, ...(cookie ? { Cookie: cookie } : {}), ...extra };
+}
+
+// ZERODHA_DEBUG=1 traces the login hop chain to stdout. It logs URLs, statuses
+// and cookie NAMES only — never the password, the TOTP, or any cookie value.
+const DEBUG = /^(1|true|yes)$/i.test(process.env.ZERODHA_DEBUG || '');
+
+function debug(...args) {
+  if (DEBUG) console.log('[zerodha]', ...args);
+}
+
+function requestTokenOf(url) {
+  try {
+    return new URL(url).searchParams.get('request_token') || '';
+  } catch {
+    return '';
+  }
+}
+
+// jarGet walks the redirect chain itself (redirect: 'manual') for two reasons:
+// fetch would not replay our cookies across hops, and we must STOP at the hop
+// that carries request_token instead of chasing it into our own /zerodha/callback
+// route — that route would exchange the token, and Kite only honours it once.
+async function jarGet(jar, startUrl, maxHops = 10) {
+  let url = startUrl;
+  for (let hop = 0; hop < maxHops; hop += 1) {
+    const res = await fetch(url, {
+      redirect: 'manual',
+      headers: jarHeaders(jar, { Accept: 'text/html,application/xhtml+xml,*/*' }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    jar.absorb(res);
+    debug(`GET ${res.status} ${url}`, res.headers.get('location') ? `-> ${res.headers.get('location')}` : '');
+    // A 200 where we expected a redirect means Kite rendered a page instead of
+    // handing back the token — the body says which page, so surface a snippet.
+    if (DEBUG && res.status === 200) {
+      const body = await res.clone().text().catch(() => '');
+      debug(`  body[0:300]: ${body.slice(0, 300).replace(/\s+/g, ' ')}`);
+    }
+
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location) {
+      url = new URL(location, url).toString();
+      const token = requestTokenOf(url);
+      if (token) return { url, requestToken: token };
+      continue;
+    }
+    if (res.status >= 400) {
+      throw new ApiError(`Zerodha login page returned HTTP ${res.status}`, res.status);
+    }
+    return { url, requestToken: requestTokenOf(url) };
+  }
+  throw new ApiError('Zerodha login redirected too many times', 502);
+}
+
+async function jarPost(jar, url, form, referer) {
+  const res = await fetch(url, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: jarHeaders(jar, {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+      'X-Kite-Version': '3',
+      ...(referer ? { Referer: referer } : {}),
+    }),
+    body: new URLSearchParams(form),
+    signal: AbortSignal.timeout(20_000),
+  });
+  jar.absorb(res);
+  const out = await res.json().catch(() => ({}));
+  debug(`POST ${res.status} ${url} -> status=${out?.status || '?'} ${out?.message || ''}`);
+  if (!res.ok || out.status === 'error') {
+    throw new ApiError(out?.message || `Zerodha HTTP ${res.status}`, res.status || 400);
+  }
+  return out;
+}
+
+// Kite reports a bad TOTP as a generic "Invalid TOTP"; point at the usual cause,
+// which is a secret copied from the wrong place rather than a mistyped code.
+function hintTOTPError(err) {
+  if (/totp|two.?fa/i.test(err?.message || '')) {
+    return new ApiError(
+      `${err.message} — check the TOTP secret is the base32 key from Kite's ` +
+        'External TOTP setup ("Can\'t scan? Copy key"), and that the server clock is in sync',
+      err.status || 403,
+    );
+  }
+  return err;
+}
+
+// submitTOTP sends the 2FA code, retrying once if the first code was generated in
+// the dying seconds of its 30s window and could have expired in flight.
+async function submitTOTP(jar, userId, totpSecret, requestId, twofaType, referer) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const genMs = Date.now();
+    try {
+      return await jarPost(
+        jar,
+        TWOFA_URL,
+        {
+          user_id: userId,
+          request_id: requestId,
+          twofa_value: generateTOTP(totpSecret, genMs),
+          ...(twofaType ? { twofa_type: twofaType } : {}),
+        },
+        referer,
+      );
+    } catch (err) {
+      if (attempt > 0 || !nearWindowEdge(genMs)) throw hintTOTPError(err);
+      await sleep(msUntilNextWindow(genMs));
+    }
+  }
+  throw new ApiError('Zerodha 2FA failed', 403);
+}
+
+// headlessLogin runs the five steps above and returns a live session envelope.
+async function headlessLogin(cr) {
+  const userId = cr.clientCode || cr.userId || '';
+  const password = cr.password || cr.pin || '';
+  if (!userId || !password || !cr.totpSecret) {
+    throw new ApiError('Zerodha auto-login needs User ID, password and TOTP secret', 400);
+  }
+
+  const jar = cookieJar();
+
+  // 1. Land on the login page (no state: headless never round-trips the callback).
+  const entry = await jarGet(jar, loginURL(cr));
+
+  // 2. Password -> request_id.
+  const login = await jarPost(jar, WEB_LOGIN_URL, { user_id: userId, password }, entry.url);
+  const requestId = login?.data?.request_id;
+  if (!requestId) throw new ApiError('Zerodha login did not return a request_id', 502);
+
+  // 3. TOTP -> the jar's cookies are now an authorized Kite session.
+  await submitTOTP(jar, userId, cr.totpSecret, requestId, login?.data?.twofa_type, entry.url);
+  debug('2FA accepted; cookies now:', jar.names().join(', '));
+
+  // 4. Replay the connect URL; skip_session=true makes Kite mint the token instead
+  //    of showing the "you are already logged in" interstitial.
+  const url = new URL(entry.url);
+  url.searchParams.set('skip_session', 'true');
+  debug('replaying connect URL:', url.toString());
+  const { url: landedUrl, requestToken } = await jarGet(jar, url.toString());
+  if (!requestToken) {
+    // Login itself succeeded (2FA passed), but Kite parked us on the app-consent
+    // screen instead of redirecting with a token. That screen appears exactly
+    // once per app+account and can only be cleared by a human clicking Authorize
+    // — Zerodha allows no headless path for it. So the FIRST connection must go
+    // through the browser popup once; every later headless login sails through.
+    const stuckOnAuth = /\/connect\/(authorize|finish)/.test(landedUrl || '');
+    if (stuckOnAuth) {
+      const err = new ApiError(
+        'Zerodha needs a one-time app authorization: open the Kite login popup once and ' +
+          'click “Authorize”. After that, auto-login runs headless with no popup.',
+        428, // Precondition Required — signals the UI to fall back to the popup.
+      );
+      err.needsAuthorize = true;
+      throw err;
+    }
+    throw new ApiError(
+      'Zerodha login succeeded but returned no request_token — check the API key is active ' +
+        'and its redirect URL matches the one registered in the Kite developer console.',
+      502,
+    );
+  }
+
+  // 5. Same exchange the popup flow performs.
+  const session = await exchangeRequestToken(requestToken, cr);
+  let margins = {};
+  try {
+    margins = await getJSON(MARGINS_URL, session);
+  } catch {
+    /* token is good; margins are optional for login status */
+  }
+  return buildResponse(session, margins, 'auto-login');
+}
+
+export function canHeadlessLogin(cr = {}) {
+  return !missingForHeadless(cr).length;
+}
+
+// missingForHeadless names what the account still needs to skip the popup, so a
+// fallback to the browser can say WHY instead of silently opening a window.
+function missingForHeadless(cr = {}) {
+  const missing = [];
+  if (!cr.clientCode && !cr.userId) missing.push('User ID');
+  if (!cr.password && !cr.pin) missing.push('Password');
+  if (!cr.totpSecret) missing.push('TOTP Secret');
+  if (!cr.autoLogin) missing.push('Auto Login');
+  return missing;
+}
+
 export async function autoLogin({ userId, state, ...cr }) {
   if (state) pending.set(state, cr);
 
@@ -251,11 +501,23 @@ export async function autoLogin({ userId, state, ...cr }) {
     }
   }
 
+  // Fully-automated path when the account has Auto Login ticked and carries a
+  // password + TOTP secret. Falls back to the popup below if anything is missing.
+  const creds = { ...cr, clientCode: cr.clientCode || userId || '' };
+  const missing = missingForHeadless(creds);
+  if (!missing.length) return headlessLogin(creds);
+
+  // No browser-popup fallback for Zerodha. The popup follows whichever user the
+  // browser last logged into kite.zerodha.com as — a cookie we can't read or set
+  // — so with several accounts it can silently sign in as the wrong one. Headless
+  // posts the exact user_id, so it's the only account-safe path. Require the creds
+  // instead of falling back. (deliberately no loginUrl -> the UI won't open a popup.)
   return {
     status: false,
     needsLogin: true,
+    needsCreds: true,
     broker: 'zerodha',
-    loginUrl: loginURL(cr, state),
+    reason: `Add ${missing.join(', ')} to this Zerodha account — login is headless, no browser popup.`,
   };
 }
 
@@ -264,6 +526,29 @@ export async function completeCallback(requestToken, state) {
   const session = await exchangeRequestToken(requestToken, cr);
   if (state) pending.delete(state);
   return session;
+}
+
+// logout invalidates the access_token via the official DELETE /session/token,
+// then drops the in-memory session. Per the docs this does NOT sign the user out
+// of Kite web/mobile — it only kills this API session. The local session is
+// cleared even if the remote call fails, so a dead token never lingers.
+export async function logout(client) {
+  const session = sessionFromClient(client);
+  const url = `${TOKEN_URL}?api_key=${encodeURIComponent(session.apiKey)}&access_token=${encodeURIComponent(session.accessToken)}`;
+  try {
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'X-Kite-Version': '3' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || out.status === 'error') {
+      throw new ApiError(out?.message || `Zerodha HTTP ${res.status}`, res.status || 400);
+    }
+  } finally {
+    if (session.userId) sessions.delete(session.userId);
+  }
+  return { status: true, broker: 'zerodha', loggedOut: true, userId: session.userId };
 }
 
 function listData(out) {
