@@ -1224,19 +1224,25 @@ function PositionProductCell({ row }) {
 
 function PositionQtyCell({ row }) {
   const quantity = positionQuantityBreakdown(row);
-  const direction = quantity.netQty > 0 ? 'Long' : quantity.netQty < 0 ? 'Short' : 'Flat';
+  const netQty = quantity.netQty;
+  const netLots = quantity.netLots;
+  const tone = netQty > 0 ? 'long' : netQty < 0 ? 'short' : 'flat';
+  const direction = netQty > 0 ? 'Long' : netQty < 0 ? 'Short' : 'Flat';
+  const buyQty = quantity.buyQty.toLocaleString('en-IN');
+  const sellQty = quantity.sellQty.toLocaleString('en-IN');
+  const lotHint = quantity.lotSize ? ` · Lot size ${quantity.lotSize}` : '';
+  const sign = netQty > 0 ? '+' : netQty < 0 ? '−' : '';
+  const lotLine = netLots != null
+    ? `${formatLots(Math.abs(netLots))} ${Math.abs(netLots) === 1 ? 'lot' : 'lots'} × ${quantity.lotSize}`
+    : 'lot size —';
   return (
-    <div className="book-qty-cell">
-      <span className={`position-net-qty ${quantity.netQty >= 0 ? 'up' : 'down'}`}>
-        <b>{direction}</b> {Math.abs(quantity.netQty).toLocaleString('en-IN')} qty
-      </span>
-      <small className="position-qty-breakdown">
-        {quantity.netLots != null && (
-          <b>{formatLots(quantity.netLots)} {Math.abs(quantity.netLots) === 1 ? 'lot' : 'lots'} ×{quantity.lotSize}</b>
-        )}
-        <span>Buy {quantity.buyQty.toLocaleString('en-IN')}</span>
-        <span>Sell {quantity.sellQty.toLocaleString('en-IN')}</span>
-      </small>
+    <div
+      className={`book-qty-cell position-qty-cell ${tone}`}
+      title={`${direction} ${Math.abs(netQty).toLocaleString('en-IN')} · Buy ${buyQty} · Sell ${sellQty}${lotHint}`}
+    >
+      <b className="position-qty-net">{sign}{Math.abs(netQty).toLocaleString('en-IN')}</b>
+      {/* A flat row's only useful number is the round trip it traded. */}
+      <span className="position-qty-sub">{netQty !== 0 ? lotLine : `B ${buyQty} · S ${sellQty}`}</span>
     </div>
   );
 }
