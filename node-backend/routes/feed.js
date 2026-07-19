@@ -10,7 +10,7 @@
 import { route, readJSON, ApiError } from '../server.js';
 import { getFeedAccount, feedStatus } from '../lib/feedRegistry.js';
 import { getSession as getUpstoxSession } from '../brokers/upstox.js';
-import { fetchUpstoxChain } from '../master/optionChain.js';
+import { getChain } from '../engine/chainCache.js';
 import { getAngelChain, getAngelExpiries } from '../angel/feedChain.js';
 
 route('GET', '/api/feed/status', () => ({ status: true, feed: feedStatus() }));
@@ -87,7 +87,7 @@ async function buildUpstoxExtra({ symbol, expiry, strikes, exchange, spotToken }
   if (upFeed?.userId) {
     const sess = getUpstoxSession(upFeed.userId);
     if (sess?.accessToken && strikes?.length) {
-      const { byStrike, source, spot } = await fetchUpstoxChain({
+      const { byStrike, source, spot } = await getChain({
         symbol, expiryISO: toISODate(expiry), accessToken: sess.accessToken, exchange, spotToken,
       });
       const A = { callBid: [], callAsk: [], callBidQty: [], callAskQty: [], callGreeks: [], putBid: [], putAsk: [], putBidQty: [], putAskQty: [], putGreeks: [] };

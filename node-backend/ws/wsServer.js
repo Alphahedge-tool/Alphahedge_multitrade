@@ -5,7 +5,11 @@
 //   -> { action: "subscribe",   broker, mode?, instruments: [{exchange, token, symbol?}] }
 //   -> { action: "unsubscribe", broker, instruments: [...] }
 //   -> { action: "status" }
+//   -> { action: "engine_subscribe",   symbol, expiry, strikes: [25000, ...] }
+//   -> { action: "engine_unsubscribe", topicId }
 //   <- { type: "tick", broker, exchange, token, mode, ltp, ... }   (normalized)
+//   <- { type: "engine_subscribed", topicId, contracts, spot, history: {col:[]} }
+//   <- { type: "engine_point", topicId, point: { time, callOi, putOi, ... } }
 //   <- { type: "feed_status", broker, connected, message }
 //   <- { type: "subscribed"|"unsubscribed", broker, count, snapshot? }
 //   <- { type: "error", message }
@@ -22,8 +26,13 @@ import {
   onStatus,
 } from './feedManager.js';
 import { subKey } from './baseAdapter.js';
+import { getFeedAccount } from '../lib/feedRegistry.js';
+import { getSession as getUpstoxSession } from '../brokers/upstox.js';
+import { subscribe as engineSubscribe, topicId as engineTopicId } from '../engine/oiDecayEngine.js';
 
-const clients = new Set(); // { sock, keys: Map<"broker|EXCH|token", {broker, inst}> }
+// clients: { sock, keys: Map<"broker|EXCH|token", {broker, inst}>,
+//            engine: Map<topicId, unsubscribe> }
+const clients = new Set();
 
 export function clientCount() {
   return clients.size;
@@ -41,7 +50,7 @@ export function attachFeedWSS(httpServer) {
   });
 
   wss.on('connection', (sock) => {
-    const client = { sock, keys: new Map() };
+    const client = { sock, keys: new Map(), engine: new Map() };
     clients.add(client);
     send(sock, { type: 'welcome', brokers: managerStatus() });
 
@@ -52,11 +61,11 @@ export function attachFeedWSS(httpServer) {
       } catch {
         return send(sock, { type: 'error', message: 'Invalid JSON' });
       }
-      try {
-        handleMessage(client, msg);
-      } catch (err) {
-        send(sock, { type: 'error', action: msg.action, broker: msg.broker, message: err.message });
-      }
+      // handleMessage is async for engine topics (building one may need a chain
+      // fetch), so failures arrive as a rejection rather than a throw.
+      Promise.resolve()
+        .then(() => handleMessage(client, msg))
+        .catch((err) => send(sock, { type: 'error', action: msg.action, broker: msg.broker, message: err.message }));
     });
 
     const cleanup = () => {
@@ -67,6 +76,16 @@ export function attachFeedWSS(httpServer) {
         byBroker.get(broker).push(inst);
       }
       for (const [broker, insts] of byBroker) clientUnsubscribe(broker, insts);
+      // Release engine topics too, or a closed tab would hold its topic (and
+      // its upstream instrument subscriptions) alive forever.
+      for (const release of client.engine.values()) {
+        try {
+          release();
+        } catch {
+          /* already torn down */
+        }
+      }
+      client.engine.clear();
     };
     sock.on('close', cleanup);
     sock.on('error', cleanup);
@@ -89,11 +108,100 @@ export function attachFeedWSS(httpServer) {
   return wss;
 }
 
+// toISODate mirrors the REST route's expiry normalization so a topic subscribed
+// over the socket and one polled over HTTP resolve to the same topic id.
+function toISODate(value) {
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{8}$/.test(raw)) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+  const match = raw.toUpperCase().match(/^(\d{2})([A-Z]{3})(\d{4})$/);
+  if (!match) return raw;
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  return `${match[3]}-${String(months.indexOf(match[2]) + 1).padStart(2, '0')}-${match[1]}`;
+}
+
+// ── engine topics ───────────────────────────────────────────────────────────
+// Derived market-intelligence series (OI / premium decay). The client asks for
+// symbol+expiry+strikes and receives the ring's history once, then one point
+// per compute cycle — replacing what used to be a 1Hz HTTP poll per tab.
+
+async function handleEngineSubscribe(client, msg) {
+  const symbol = String(msg.symbol || '').toUpperCase();
+  const expiryISO = toISODate(msg.expiry);
+  const strikes = (Array.isArray(msg.strikes) ? msg.strikes : []).map(Number).filter(Number.isFinite);
+  if (!symbol || !expiryISO) throw new Error('symbol and expiry required');
+  if (!strikes.length) throw new Error('strikes required');
+
+  const id = engineTopicId({ symbol, expiryISO, strikes });
+  if (client.engine.has(id)) {
+    return send(client.sock, { type: 'engine_subscribed', topicId: id, duplicate: true });
+  }
+  // Reserve the slot before awaiting so two rapid subscribes for the same topic
+  // can't both get through and leak one of the leases.
+  client.engine.set(id, () => {});
+
+  const feedEntry = getFeedAccount('upstox');
+  const session = feedEntry?.userId ? getUpstoxSession(feedEntry.userId) : null;
+  if (!session?.accessToken) {
+    client.engine.delete(id);
+    throw new Error('Select and connect an Upstox Feed Master account first');
+  }
+
+  let handle;
+  try {
+    handle = await engineSubscribe(
+      { symbol, expiryISO, strikes, accessToken: session.accessToken, exchange: msg.exchange, spotToken: msg.spotToken },
+      (point) => send(client.sock, { type: 'engine_point', topicId: id, point }),
+    );
+  } catch (err) {
+    client.engine.delete(id);
+    throw err;
+  }
+
+  // The socket may have closed while the topic was being built; if so the
+  // cleanup already ran and would never see this handle.
+  if (!clients.has(client)) {
+    handle.unsubscribe();
+    return undefined;
+  }
+  client.engine.set(id, handle.unsubscribe);
+
+  const topic = handle.topic;
+  return send(client.sock, {
+    type: 'engine_subscribed',
+    topicId: id,
+    symbol,
+    expiry: expiryISO,
+    strikes: topic.strikes,
+    contracts: topic.contracts.size,
+    spot: topic.spot,
+    // Whatever the topic has already accumulated, so a reconnecting client
+    // backfills the gap instead of showing a hole in the chart.
+    history: topic.ring.toJSON(),
+  });
+}
+
+function handleEngineUnsubscribe(client, msg) {
+  const id = String(msg.topicId || '');
+  const release = client.engine.get(id);
+  if (release) {
+    client.engine.delete(id);
+    try {
+      release();
+    } catch {
+      /* already torn down */
+    }
+  }
+  return send(client.sock, { type: 'engine_unsubscribed', topicId: id });
+}
+
 function handleMessage(client, msg) {
   const action = String(msg.action || '').toLowerCase();
   if (action === 'status') {
     return send(client.sock, { type: 'status', brokers: managerStatus(), clients: clients.size });
   }
+  if (action === 'engine_subscribe') return handleEngineSubscribe(client, msg);
+  if (action === 'engine_unsubscribe') return handleEngineUnsubscribe(client, msg);
 
   const broker = String(msg.broker || '').toLowerCase();
   const instruments = (Array.isArray(msg.instruments) ? msg.instruments : [])

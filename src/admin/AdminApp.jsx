@@ -12,6 +12,7 @@ import Feedmaster from './pages/Feedmaster'
 import GetPositions from './tradepanel/GetPositions'
 import GetOrderBook from './tradepanel/GetOrderBook'
 import OptionChainPage from './tradepanel/OptionChainPage'
+import MiniChainWindow from './tradepanel/MiniChainWindow'
 import Placeholder from './pages/Placeholder'
 import StartupGate from './startup/StartupGate'
 import OiPremiumDecay from './market/OiPremiumDecay'
@@ -52,9 +53,15 @@ export default function AdminApp() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <LocalizationProvider dateAdapter={AdapterDayjs}>
-        <StartupGate>
         <HashRouter>
           <Routes>
+            {/* The pop-out mini chain window sits OUTSIDE StartupGate on purpose:
+                it is a read-only ticker against a backend that is already logged
+                in, so it must not re-run the broker login sequence. */}
+            <Route path="/mini" element={<MiniChainWindow />} />
+            <Route path="*" element={
+              <StartupGate>
+                <Routes>
             <Route path="/" element={<Navigate to="/admin" replace />} />
             <Route path="/admin" element={<AdminLayout admin={admin} themeMode={themeMode} onToggleTheme={toggleTheme} />}>
               <Route index element={<AdminDashboard />} />
@@ -76,9 +83,11 @@ export default function AdminApp() {
               <Route path="trade-panel" element={<Navigate to="/admin/trade-panel/enter-trade" replace />} />
             </Route>
             <Route path="*" element={<Navigate to="/admin" replace />} />
+                </Routes>
+              </StartupGate>
+            } />
           </Routes>
         </HashRouter>
-        </StartupGate>
       </LocalizationProvider>
     </ThemeProvider>
   )

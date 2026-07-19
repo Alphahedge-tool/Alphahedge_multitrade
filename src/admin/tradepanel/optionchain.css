@@ -719,6 +719,279 @@
   padding: 32px !important;
 }
 
+/* ── Mini chain widget ──────────────────────────────────────────────────────
+   A floating, draggable pop-out of the loaded chain showing only CALL LTP |
+   STRIKE | PUT LTP. Deliberately reuses the full chain's cell classes
+   (.oc-ltp / .oc-strike-cell / .oc-atm / .oc-live) so the numbers are formatted
+   and coloured identically — this only adds the shell and the column widths.
+
+   The header and the body are two separate tables (so the header stays put
+   while the body scrolls); `table-layout: fixed` + the shared column widths
+   below are what keeps the two in alignment. */
+.oc-mini {
+  --oc-mini-ltp-w: 88px;
+  --oc-mini-strike-w: 92px;
+  position: fixed;
+  z-index: 1300; /* above MUI's app bar / drawers */
+  width: calc((var(--oc-mini-ltp-w) * 2) + var(--oc-mini-strike-w));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ao-border);
+  border-radius: 6px;
+  background: var(--ao-surface);
+  box-shadow: 0 12px 32px rgba(16, 24, 40, .22);
+  overflow: hidden;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+}
+
+.oc-mini-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 7px;
+  background: var(--ao-surface-2);
+  border-bottom: 1px solid var(--ao-border-soft);
+  cursor: grab;
+  user-select: none;
+  touch-action: none; /* required for pointer-drag on touch devices */
+}
+.oc-mini-head:active { cursor: grabbing; }
+.oc-mini-grip { color: var(--ao-placeholder); flex: 0 0 auto; }
+
+.oc-mini-title {
+  color: var(--ao-bold);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+.oc-mini-sub {
+  color: var(--ao-caption);
+  font-size: 0.66rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-mini-spot {
+  margin-left: auto;
+  color: var(--ao-bold);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-mini-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ao-caption);
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
+}
+.oc-mini-close:hover {
+  background: color-mix(in srgb, var(--ao-red) 14%, transparent);
+  color: var(--ao-red);
+}
+
+/* Strike-window picker (±5 / ±10 / ±20 / All around the ATM). */
+.oc-mini-tools {
+  display: flex;
+  gap: 3px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--ao-border-soft);
+  background: var(--ao-surface);
+}
+.oc-mini-win {
+  flex: 1;
+  height: 21px;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 3px;
+  background: var(--ao-surface);
+  color: var(--ao-caption);
+  font-family: inherit;
+  font-size: 0.66rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .12s ease, background-color .12s ease, color .12s ease;
+}
+.oc-mini-win:hover { border-color: var(--ao-blue); color: var(--ao-blue); }
+.oc-mini-win.active {
+  border-color: var(--ao-blue);
+  background: var(--ao-blue-bg);
+  color: var(--ao-blue);
+}
+
+.oc-mini-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* Shared column widths — these are what align the header table with the body
+   table. Keep the three selectors in sync if a column is ever added. */
+.oc-mini-table th:nth-child(1),
+.oc-mini-table td:nth-child(1),
+.oc-mini-table th:nth-child(3),
+.oc-mini-table td:nth-child(3) { width: var(--oc-mini-ltp-w); }
+.oc-mini-table th:nth-child(2),
+.oc-mini-table td:nth-child(2) { width: var(--oc-mini-strike-w); }
+
+.oc-mini-table thead th {
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--ao-border-soft);
+  font-family: inherit;
+  font-size: 0.63rem;
+  font-weight: 600;
+  color: var(--ao-caption);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.oc-mini-band th {
+  padding: 3px;
+  text-align: center;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: #fff;
+}
+.oc-mini-band .oc-mini-call { background: var(--ao-green); }
+.oc-mini-band .oc-mini-put { background: var(--ao-red); }
+.oc-mini-band .oc-mini-strike-band {
+  background: var(--ao-surface-2);
+  color: var(--ao-bold);
+}
+.oc-mini-cols th:nth-child(2) { text-align: center; background: var(--ao-surface-2); }
+
+/* The body is the only scrolling part; the header tables sit above it. */
+.oc-mini-body {
+  max-height: 340px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.oc-mini-body::-webkit-scrollbar { width: 8px; }
+.oc-mini-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid var(--ao-surface);
+  background: rgba(136, 149, 171, .55);
+}
+
+.oc-mini-table td {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 7px;
+  text-align: right;
+  border-bottom: 1px solid var(--ao-border-soft);
+  color: var(--ao-base);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* PUT premiums read left-aligned so the pair mirrors around the strike, exactly
+   like the full chain's mirrored layout. */
+.oc-mini-table td.oc-mini-put-ltp { text-align: left; }
+.oc-mini-table td.oc-strike-cell { font-size: 0.75rem; }
+.oc-mini-table tbody tr:hover td { background: var(--ao-hover); }
+
+.oc-mini-empty {
+  text-align: center !important;
+  color: var(--ao-caption);
+  padding: 20px !important;
+}
+
+/* ── Standalone window (/#/mini) ────────────────────────────────────────────
+   Same table as the in-page widget, but it OWNS the viewport: no floating
+   shell, no drag handle, and the body stretches to whatever the user resizes
+   the desktop window to. */
+.oc-mini-window {
+  --oc-mini-ltp-w: 88px;
+  --oc-mini-strike-w: 92px;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ao-surface);
+  overflow: hidden;
+  font-family: "Open Sans", Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+}
+
+.oc-mini-win-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 7px;
+  background: var(--ao-surface-2);
+  border-bottom: 1px solid var(--ao-border-soft);
+  /* Lets the window be dragged by its header when running as an installed PWA
+     (Chrome's window-controls-overlay); harmless in a normal browser tab. */
+  -webkit-app-region: drag;
+}
+.oc-mini-win-head select,
+.oc-mini-win-head button { -webkit-app-region: no-drag; }
+
+.oc-mini-select {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--ao-border-soft);
+  border-radius: 3px;
+  background: var(--ao-surface);
+  color: var(--ao-bold);
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.oc-mini-select:disabled { opacity: .55; cursor: default; }
+
+/* Feed heartbeat: grey when idle, pulsing green while ticks are arriving. */
+.oc-mini-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ao-placeholder);
+}
+.oc-mini-dot.live {
+  background: var(--ao-green);
+  animation: oc-live-glow 1.4s ease-in-out infinite;
+}
+
+/* In the standalone window the ladder should fill the height, not cap at 340px
+   like the floating widget does. */
+.oc-mini-body-fill {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.oc-mini-window .oc-mini-table th:nth-child(1),
+.oc-mini-window .oc-mini-table td:nth-child(1),
+.oc-mini-window .oc-mini-table th:nth-child(3),
+.oc-mini-window .oc-mini-table td:nth-child(3) { width: auto; }
+.oc-mini-window .oc-mini-table th:nth-child(2),
+.oc-mini-window .oc-mini-table td:nth-child(2) { width: var(--oc-mini-strike-w); }
+
+.oc-mini-err {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  background: color-mix(in srgb, var(--ao-red) 12%, transparent);
+  color: var(--ao-red);
+  font-size: 0.66rem;
+}
+
+.oc-mini-spin { animation: oc-mini-rotate .9s linear infinite; vertical-align: -2px; }
+@keyframes oc-mini-rotate { to { transform: rotate(360deg); } }
+
 @media (max-width: 860px) {
   .oc-page-title {
     align-items: flex-start;

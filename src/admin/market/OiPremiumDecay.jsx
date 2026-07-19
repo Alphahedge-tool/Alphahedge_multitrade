@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, Box, Button, Checkbox, Chip, CircularProgress, FormControl, InputLabel,
   ListItemText, MenuItem, Paper, Select, Stack, Typography,
 } from '@mui/material'
 import { RefreshCw } from 'lucide-react'
 import UplotChart from '../charting/UplotChart'
+import { useEngineTopic } from './useEngineTopic'
 
 const SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
 
@@ -58,7 +59,6 @@ export default function OiPremiumDecay() {
   const [meta, setMeta] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const liveRequestRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -131,29 +131,47 @@ export default function OiPremiumDecay() {
     return () => { cancelled = true }
   }, [symbol, expiry])
 
-  // One option-chain snapshot per second. Do not overlap requests when Upstox
-  // takes longer than a second; the next timer tick simply waits.
+  // Live updates are pushed by the server-side engine over /ws/feed. The engine
+  // keeps these contracts subscribed on one upstream Upstox WebSocket and folds
+  // them once per second for every viewer, so this costs no per-tab request.
+  // (This replaced a 1Hz poll that re-fetched the whole option chain each tick.)
+  const liveActive = Boolean(points.length) && isMarketOpen()
+  const { point: livePoint, history: liveHistory, status: liveStatus } = useEngineTopic({
+    symbol,
+    expiry,
+    strikes: selectedStrikes,
+    enabled: liveActive,
+  })
+
   useEffect(() => {
-    if (!symbol || !expiry || !points.length || !isMarketOpen()) return undefined
-    let cancelled = false
-    const timer = setInterval(async () => {
-      if (cancelled || liveRequestRef.current) return
-      liveRequestRef.current = true
-      try {
-        const response = await fetch('/api/feed/oi-premium-decay', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol, expiry, strikes: selectedStrikes, snapshot: true }),
+    if (!livePoint) return
+    setPoints((current) => [...current, livePoint].slice(-900))
+    setMeta((current) => ({ ...current, spot: livePoint.spot, contracts: livePoint.contracts ?? current?.contracts }))
+  }, [livePoint])
+
+  // On (re)subscribe the engine sends whatever the topic already accumulated,
+  // so a dropped socket backfills instead of leaving a permanent hole in the
+  // chart. Deduped by timestamp, and a no-op on a freshly created topic.
+  useEffect(() => {
+    if (!liveHistory?.time?.length) return
+    setPoints((current) => {
+      const seen = new Set(current.map((p) => p.time))
+      const merged = current.slice()
+      for (let i = 0; i < liveHistory.time.length; i++) {
+        const time = liveHistory.time[i]
+        if (time == null || seen.has(time)) continue
+        merged.push({
+          time,
+          callOi: liveHistory.callOi[i],
+          putOi: liveHistory.putOi[i],
+          callPremium: liveHistory.callPremium[i],
+          putPremium: liveHistory.putPremium[i],
+          spot: liveHistory.spot[i],
         })
-        const body = await response.json().catch(() => ({}))
-        if (!response.ok || !body.point || cancelled) return
-        setPoints((current) => [...current, body.point].slice(-900))
-        setMeta((current) => ({ ...current, spot: body.spot, contracts: body.contracts }))
-      } finally {
-        liveRequestRef.current = false
       }
-    }, 1000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [symbol, expiry, selectedStrikes.join(','), points.length > 0])
+      return merged.sort((a, b) => a.time - b.time).slice(-900)
+    })
+  }, [liveHistory])
 
   const last = points[points.length - 1]
   const summary = useMemo(() => last ? [
@@ -235,6 +253,13 @@ export default function OiPremiumDecay() {
               {strikes.map((strike) => <MenuItem key={strike} value={strike} sx={{ minHeight: '34px !important', py: 0, px: 0.9, fontSize: '0.95rem' }}><Checkbox size="small" checked={selectedStrikes.includes(strike)} sx={{ p: 0.4, mr: 0.65, '& .MuiSvgIcon-root': { fontSize: 19 } }} /><ListItemText primary={strike} slotProps={{ primary: { sx: { fontSize: '0.95rem', fontWeight: 600, lineHeight: 1.25 } } }} /></MenuItem>)}
             </Select>
           </FormControl>
+          {liveActive && <Chip
+            size="small"
+            variant="outlined"
+            color={liveStatus === 'live' ? 'success' : liveStatus === 'error' ? 'error' : 'default'}
+            label={liveStatus === 'live' ? 'Live' : liveStatus === 'connecting' ? 'Connecting' : liveStatus === 'error' ? 'Live failed' : 'Reconnecting'}
+            sx={{ height: 26 }}
+          />}
           <Button size="small" variant="outlined" sx={{ height: 34, minWidth: 82 }} disabled={loading || !expiry || !selectedStrikes.length} startIcon={loading ? <CircularProgress size={13} /> : <RefreshCw size={13} />} onClick={() => loadHistory()}>Reload</Button>
         </Stack>
       </Box>
@@ -242,7 +267,7 @@ export default function OiPremiumDecay() {
       {error && <Alert severity="error">{error}</Alert>}
       {meta && <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ display: 'none' }}>
         <Chip size="small" label={`${meta.contracts || 0} CE/PE contracts`} />
-        <Chip size="small" label={`Batch size ${meta.batchSize || 10}`} />
+        <Chip size="small" label={`${meta.pagesPerContract || 0} pages × ${meta.concurrency || 0} parallel`} />
         {meta.tradingDate && <Chip size="small" label={`${meta.tradingDate} · 09:15–15:29 IST`} />}
         <Chip size="small" color="success" label="S1 · Live" />
         {meta.failedContracts > 0 && <Chip size="small" color="warning" label={`${meta.failedContracts} history requests failed`} />}
