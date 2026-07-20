@@ -7,3 +7,12 @@ createRoot(document.getElementById('admin-root')).render(
     <AdminApp />
   </StrictMode>,
 )
+
+// Register the service worker that makes the Mini Chain installable as a
+// standalone desktop window. Failure is non-fatal — the web app works either
+// way, you just lose the "Install" option.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  })
+}

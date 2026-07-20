@@ -1,18 +1,16 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
-import { Filter, RefreshCw, Radio, X, Zap, ZapOff } from 'lucide-react'
+import { Filter, RefreshCw, Radio, Rows3, X, Zap, ZapOff } from 'lucide-react'
+import {
+  ROW_HEIGHT, greek, liveAskFromTicks, liveBidFromTicks, liveGreekFromTicks, liveLtpFromTicks,
+  liveOiFromTicks, liveTickStore, num, oiWidth, px, tickKey, useLiveMeta, useLiveTicks,
+} from './chainLive'
+import { INDEX_UNDERLYINGS, MCX_UNDERLYINGS, chainExchangeFor, upstoxExchange } from './chainSymbols'
+import MiniOptionChain from './MiniOptionChain'
 import './optionchain.css'
 
-const DASH = '-'
-const ROW_HEIGHT = 34
 const VIRTUAL_ROW_THRESHOLD = 160
 const VIRTUAL_OVERSCAN = 8
-const inrFormatter = new Intl.NumberFormat('en-IN')
-const num = (v) => (v == null ? DASH : inrFormatter.format(Number(v)))
-const px = (v) => (v == null ? DASH : Number(v).toFixed(2))
-const greek = (v, digits = 2) => (v == null || Number.isNaN(Number(v)) ? DASH : Number(v).toFixed(digits))
-const tickKey = (broker, token) => (token != null && token !== '' ? `${broker}|${token}` : '')
-const oiWidth = (oi, maxOi) => (maxOi ? Math.min(100, Math.round(((Number(oi) || 0) / maxOi) * 100)) : 0)
 
 // Option-chain filter fields. Each knows how to pull its value from a strike's
 // row (side-aware for premium/greeks; "strike" ignores side). `step` sets the
@@ -75,122 +73,6 @@ function buildFilterPredicate(filter) {
   // Side: which column(s) the field is read from. Strike is side-independent.
   const sides = field.sideless ? ['call'] : filter.side === 'either' ? ['call', 'put'] : [filter.side]
   return (row) => sides.some((side) => cmp(field.get(row, side)))
-}
-
-function createLiveTickStore() {
-  const ticks = new Map()
-  const versions = new Map()
-  const listeners = new Map()
-  const metaListeners = new Set()
-  let meta = { tickCount: 0, lastTickAt: 0, version: 0 }
-
-  const notifyKey = (key) => {
-    const set = listeners.get(key)
-    if (!set) return
-    set.forEach((listener) => listener())
-  }
-
-  return {
-    setBatch(patch, count) {
-      const changed = []
-      Object.entries(patch).forEach(([key, tick]) => {
-        ticks.set(key, tick)
-        versions.set(key, (versions.get(key) || 0) + 1)
-        changed.push(key)
-      })
-      meta = { tickCount: meta.tickCount + count, lastTickAt: Date.now(), version: meta.version + 1 }
-      changed.forEach(notifyKey)
-      metaListeners.forEach((listener) => listener())
-    },
-    reset() {
-      const changed = Array.from(ticks.keys())
-      ticks.clear()
-      versions.clear()
-      meta = { tickCount: 0, lastTickAt: 0, version: meta.version + 1 }
-      changed.forEach(notifyKey)
-      metaListeners.forEach((listener) => listener())
-    },
-    getTick(key) {
-      return key ? ticks.get(key) || null : null
-    },
-    getVersion(keys) {
-      return keys.map((key) => (key ? versions.get(key) || 0 : 0)).join('|')
-    },
-    getMeta() {
-      return meta
-    },
-    subscribeKeys(keys, listener) {
-      const activeKeys = [...new Set(keys.filter(Boolean))]
-      activeKeys.forEach((key) => {
-        if (!listeners.has(key)) listeners.set(key, new Set())
-        listeners.get(key).add(listener)
-      })
-      return () => {
-        activeKeys.forEach((key) => {
-          const set = listeners.get(key)
-          if (!set) return
-          set.delete(listener)
-          if (!set.size) listeners.delete(key)
-        })
-      }
-    },
-    subscribeMeta(listener) {
-      metaListeners.add(listener)
-      return () => metaListeners.delete(listener)
-    },
-  }
-}
-
-const liveTickStore = createLiveTickStore()
-
-function useLiveTicks(keys) {
-  const keySig = keys.join('|')
-  const stableKeys = useMemo(() => keys, [keySig])
-  useSyncExternalStore(
-    useCallback((listener) => liveTickStore.subscribeKeys(stableKeys, listener), [stableKeys]),
-    useCallback(() => liveTickStore.getVersion(stableKeys), [stableKeys]),
-    () => ''
-  )
-  return stableKeys.map((key) => liveTickStore.getTick(key))
-}
-
-function useLiveMeta() {
-  const [, refresh] = useState(0)
-  useEffect(() => {
-    const timer = setInterval(() => refresh((n) => n + 1), 500)
-    return () => clearInterval(timer)
-  }, [])
-  return liveTickStore.getMeta()
-}
-
-function liveLtpFromTicks(angelTick, upTick, preferredBroker, restLtp) {
-  const first = preferredBroker === 'upstox' ? [upTick, angelTick] : [angelTick, upTick]
-  for (const tick of first) if (tick?.ltp != null) return tick.ltp
-  return restLtp
-}
-
-function liveOiFromTicks(angelTick, upTick, restOi) {
-  if (angelTick?.oi != null) return angelTick.oi
-  if (upTick?.oi != null) return upTick.oi
-  return restOi
-}
-
-function liveBidFromTicks(angelTick, upTick, restBid) {
-  if (upTick?.bid != null) return upTick.bid
-  if (angelTick?.bid != null) return angelTick.bid
-  return restBid
-}
-
-function liveAskFromTicks(angelTick, upTick, restAsk) {
-  if (upTick?.ask != null) return upTick.ask
-  if (angelTick?.ask != null) return angelTick.ask
-  return restAsk
-}
-
-function liveGreekFromTicks(upTick, field, restVal) {
-  if (field === 'iv' && upTick?.iv != null) return upTick.iv
-  if (upTick?.greeks?.[field] != null) return upTick.greeks[field]
-  return restVal
 }
 
 // One CALL-side row. Memoized so a WebSocket tick only re-renders the strikes
@@ -306,18 +188,10 @@ export default function OptionChain() {
   // Structured filter: field (premium/greek/OI/strike) + operator + value + side.
   const [filter, setFilter] = useState(DEFAULT_FILTER)
   const [filterOpen, setFilterOpen] = useState(false)
+  // Mini chain widget: a floating LTP-only view of the SAME loaded chain.
+  const [miniOpen, setMiniOpen] = useState(false)
 
-  // Index underlyings + MCX commodities. MCX names must match the Angel scrip
-  // master (see node-backend/angel/scripoptions.js MCX_SYMBOLS).
-  const INDEX_UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
-  const MCX_UNDERLYINGS = ['CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI', 'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'COPPER', 'ZINC']
-  const isMcx = MCX_UNDERLYINGS.includes(symbol)
-  // MCX contracts settle on Angel's MCX segment; index options on NFO/BFO.
-  const chainExchange = isMcx ? 'MCX' : symbol === 'SENSEX' ? 'BFO' : 'NFO'
-  // The Upstox adapter maps our exchange -> instrument-key prefix; MCX options
-  // live under MCX_FO. (The tokens we send already include the prefix, but the
-  // adapter also accepts a bare token + this exchange.)
-  const upstoxExchange = (ex) => (ex === 'MCX' ? 'MCX' : ex)
+  const chainExchange = chainExchangeFor(symbol)
 
   // Poll the feed registry (which accounts power the chain) + the live WebSocket
   // adapter status (connected/subscriptions per broker).
@@ -812,6 +686,19 @@ export default function OptionChain() {
           {isSearching && <span className="oc-filter-badge">{matchedIndexes.length}</span>}
         </button>
 
+        {/* Mini chain — pops out a compact floating LTP/strike widget fed by the
+            chain and tick stream already loaded here (no extra subscriptions). */}
+        <button
+          type="button"
+          className={`oc-filter-toggle${miniOpen ? ' active' : ''}`}
+          onClick={() => setMiniOpen((v) => !v)}
+          disabled={!chain}
+          title="Pop out a mini chain (LTP + strike only)"
+        >
+          <Rows3 size={15} />
+          Mini
+        </button>
+
         {/* Live WebSocket controls + status — the whole point of the MCX test. */}
         <FormControl size="small" sx={{ minWidth: 120 }}>
           <InputLabel>Live feed</InputLabel>
@@ -1100,6 +987,24 @@ export default function OptionChain() {
           </div>
         )}
       </div>
+
+      {miniOpen && chain && (
+        <MiniOptionChain
+          symbol={chain.symbol || symbol}
+          expiry={chain.expiry || expiry}
+          spot={spotLtp}
+          atm={atm}
+          strikes={chain.strikes || []}
+          callLtp={chain.callLtp || []}
+          putLtp={chain.putLtp || []}
+          callTokens={chain.callTokens || []}
+          putTokens={chain.putTokens || []}
+          upCallTokens={upTokens.callTokens || []}
+          upPutTokens={upTokens.putTokens || []}
+          wsBroker={wsBroker}
+          onClose={() => setMiniOpen(false)}
+        />
+      )}
     </Box>
   )
 }

@@ -1,0 +1,17 @@
+{
+  "id": "alphahedge-mini-chain",
+  "name": "AlphaHedge Mini Chain",
+  "short_name": "Mini Chain",
+  "description": "Live option-chain premiums (CALL LTP / strike / PUT LTP) in a standalone desktop window.",
+  "start_url": "/#/mini",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/mini-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/mini-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/mini-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

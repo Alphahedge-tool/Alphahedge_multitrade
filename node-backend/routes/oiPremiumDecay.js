@@ -5,11 +5,26 @@
 import { route, readJSON, ApiError } from '../server.js';
 import { getFeedAccount } from '../lib/feedRegistry.js';
 import { getSession as getUpstoxSession } from '../brokers/upstox.js';
-import { fetchUpstoxChain } from '../master/optionChain.js';
+import { getChain } from '../engine/chainCache.js';
+import { poll as enginePoll } from '../engine/oiDecayEngine.js';
 
 const CHART_URL = 'https://service.upstox.com/chart/open/v3/candles';
-const BATCH_SIZE = 10;
 const RETRYABLE = new Set([429, 464, 500, 502, 503, 504]);
+
+// Candles per page are capped at 500 upstream, and one S1 candle is one second,
+// so a page spans a known, fixed amount of wall time. That is what makes the
+// page boundaries computable instead of discovered.
+const INTERVAL_MS = { S1: 1000 };
+
+// Simultaneous in-flight chart requests. The old code peaked at 10 (one per
+// contract in a batch) while each contract paged serially; this holds a similar
+// upstream footprint but spends it on pages instead of waiting on them.
+const CONCURRENCY = Number(process.env.CANDLE_CONCURRENCY || 20);
+
+// Settled pages are cached, budgeted by candle count (~80 bytes each, so the
+// default is roughly 25 MB) with least-recently-used eviction.
+const MAX_CACHED_CANDLES = Number(process.env.CANDLE_CACHE_MAX || 300_000);
+const SETTLE_MS = 60_000;
 
 function toISODate(value) {
   const raw = String(value || '').trim();
@@ -30,7 +45,9 @@ function upstoxFeedSession() {
 
 async function loadChain(body) {
   const session = upstoxFeedSession();
-  const chain = await fetchUpstoxChain({
+  // Cached + single-flighted: the 1Hz snapshot poll and every concurrent tab
+  // share one upstream chain fetch per TTL window.
+  const chain = await getChain({
     symbol: body.symbol,
     expiryISO: toISODate(body.expiry),
     accessToken: session.accessToken,
@@ -77,40 +94,117 @@ async function fetchCandlePage(contract, from, limit) {
   throw lastError || new Error('Upstox chart request failed');
 }
 
-async function fetchCandleRange(contract, start, end, limit) {
-  const all = [];
-  let cursor = end;
-  let pages = 0;
-  const seenCursors = new Set();
-  while (cursor >= start && pages < 60 && !seenCursors.has(cursor)) {
-    seenCursors.add(cursor);
-    const page = await fetchCandlePage(contract, cursor, limit);
-    pages++;
-    all.push(...page.candles);
-    const oldest = page.candles.reduce((value, candle) => Math.min(value, Number(candle?.[0]) || Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
-    if (oldest <= start || !page.prevTimestamp) break;
-    cursor = page.prevTimestamp;
+// pageCursors computes every page boundary up front.
+//
+// The old implementation chased `prevTimestamp`: each request's starting point
+// came out of the previous request's response, so a full session was ~45 STRICTLY
+// SERIAL round-trips per contract (22,500 one-second candles / 500 per page),
+// and spot history ran as another 45 after those. That serialization — not the
+// payload — was the multi-second page load.
+//
+// But at a fixed interval, a page of `limit` candles spans exactly
+// limit * intervalMs. The boundaries are arithmetic, so no response is needed to
+// know where the next page starts and every page can be fetched at once.
+//
+// On an illiquid contract a page reaches FURTHER back than its slice (fewer
+// candles exist than the limit), which makes neighbouring slices redundant, not
+// missing. Redundant pages collapse in the dedupe below; gaps cannot open up.
+function pageCursors(start, end, limit, interval = 'S1') {
+  const step = INTERVAL_MS[interval] || 1000;
+  // A page anchored at C returns candles at C, C-step, ... C-(limit-1)*step, so
+  // it COVERS (limit-1)*step of wall time while the next anchor sits a full
+  // limit*step below it. Conflating the two drops the oldest candle of the
+  // range, so stride and coverage are tracked separately.
+  const stride = limit * step;
+  const coverage = (limit - 1) * step;
+  const cursors = [];
+  for (let cursor = end; ; cursor -= stride) {
+    cursors.push(cursor);
+    if (cursor - coverage <= start) break;
   }
-  const unique = new Map();
-  for (const candle of all) {
-    const time = Number(candle?.[0]);
-    if (time >= start && time <= end) unique.set(time, candle);
-  }
-  return [...unique.values()].sort((a, b) => Number(a[0]) - Number(b[0]));
+  return cursors;
 }
 
-async function fetchInBatches(contracts, start, end, limit) {
-  const results = new Map();
+// A page whose whole span is in the past can never change, so it is worth
+// keeping; the page containing "now" is not. Budgeted by candle count rather
+// than entry count, because entry sizes vary by three orders of magnitude
+// between a liquid ATM strike and a dead wing.
+const pageCache = new Map(); // `key|cursor|limit` -> candles[]
+let cachedCandles = 0;
+
+function cacheGet(cacheKey) {
+  const hit = pageCache.get(cacheKey);
+  if (!hit) return null;
+  // Refresh recency for the FIFO-with-reinsertion eviction below.
+  pageCache.delete(cacheKey);
+  pageCache.set(cacheKey, hit);
+  return hit;
+}
+
+function cachePut(cacheKey, candles, cursor) {
+  if (cursor > Date.now() - SETTLE_MS) return; // still moving; not cacheable
+  pageCache.set(cacheKey, candles);
+  cachedCandles += candles.length;
+  while (cachedCandles > MAX_CACHED_CANDLES && pageCache.size) {
+    const oldest = pageCache.keys().next().value;
+    cachedCandles -= pageCache.get(oldest).length;
+    pageCache.delete(oldest);
+  }
+}
+
+async function fetchPageCached(key, cursor, limit) {
+  const cacheKey = `${key}|${cursor}|${limit}`;
+  const hit = cacheGet(cacheKey);
+  if (hit) return hit;
+  const page = await fetchCandlePage({ key }, cursor, limit);
+  cachePut(cacheKey, page.candles, cursor);
+  return page.candles;
+}
+
+// runPool executes tasks with bounded concurrency. Unbounded Promise.all over
+// every (contract x page) pair would open hundreds of sockets at once and earn
+// a 429; serial execution is what we are here to remove. A worker pool gives
+// the parallelism without the burst.
+async function runPool(tasks, concurrency) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    for (let i = next++; i < tasks.length; i = next++) await tasks[i]();
+  });
+  await Promise.all(workers);
+}
+
+// fetchAllRanges pulls the full range for every instrument key in ONE pool —
+// option contracts and the underlying together, so spot history no longer waits
+// for the contracts to finish.
+async function fetchAllRanges(keys, start, end, limit) {
+  const cursors = pageCursors(start, end, limit);
+  const collected = new Map(keys.map((key) => [key, []]));
   const errors = {};
-  for (let offset = 0; offset < contracts.length; offset += BATCH_SIZE) {
-    const batch = contracts.slice(offset, offset + BATCH_SIZE);
-    await Promise.all(batch.map(async (contract) => {
-      try {
-        results.set(contract.key, await fetchCandleRange(contract, start, end, limit));
-      } catch (error) {
-        errors[contract.key] = error.message || 'Chart request failed';
-      }
-    }));
+
+  const tasks = [];
+  for (const key of keys) {
+    for (const cursor of cursors) {
+      tasks.push(async () => {
+        try {
+          collected.get(key).push(...await fetchPageCached(key, cursor, limit));
+        } catch (error) {
+          // One bad page no longer discards the whole contract — the rest of
+          // its pages still count. Recorded so the response can report it.
+          errors[key] = error.message || 'Chart request failed';
+        }
+      });
+    }
+  }
+  await runPool(tasks, CONCURRENCY);
+
+  const results = new Map();
+  for (const [key, all] of collected) {
+    const unique = new Map();
+    for (const candle of all) {
+      const time = Number(candle?.[0]);
+      if (time >= start && time <= end) unique.set(time, candle);
+    }
+    results.set(key, [...unique.values()].sort((a, b) => Number(a[0]) - Number(b[0])));
   }
   return { results, errors };
 }
@@ -159,9 +253,57 @@ function aggregateHistory(contracts, candlesByKey, spotCandles = []) {
   return points;
 }
 
+// snapshotFromEngine serves a live point from the push engine, which holds the
+// selected contracts subscribed on the Upstox WebSocket. Costs no upstream
+// request. Returns null when the engine can't serve (live feed down, or no
+// contract has reported yet) so the caller can fall back to the REST chain.
+async function snapshotFromEngine(body) {
+  const session = upstoxFeedSession();
+  let served;
+  try {
+    served = await enginePoll({
+      symbol: body.symbol,
+      expiryISO: toISODate(body.expiry),
+      strikes: Array.isArray(body.strikes) ? body.strikes : [],
+      accessToken: session.accessToken,
+      exchange: body.exchange,
+      spotToken: body.spotToken,
+    });
+  } catch (error) {
+    // No Upstox account in Feed Master / adapter not running: degrade to REST
+    // rather than failing the request.
+    if (error?.code === 'FEED_DOWN') return null;
+    throw error;
+  }
+  if (!served) return null;
+  const { point, topic } = served;
+  return {
+    status: true,
+    source: 'engine-live',
+    point: {
+      time: point.time,
+      callOi: point.callOi,
+      putOi: point.putOi,
+      callPremium: point.callPremium,
+      putPremium: point.putPremium,
+      spot: point.spot ?? null,
+    },
+    contracts: topic.contracts.size,
+    spot: point.spot ?? topic.spot ?? null,
+  };
+}
+
 route('POST', '/api/feed/oi-premium-decay', async (req) => {
   const body = await readJSON(req);
   if (!body.symbol || !body.expiry) throw new ApiError('symbol and expiry are required', 400);
+
+  // Live snapshot polls take the engine path first — a memory read instead of
+  // a full option-chain fetch. Anything it can't serve falls through below.
+  if (body.snapshot === true) {
+    const served = await snapshotFromEngine(body);
+    if (served) return served;
+  }
+
   const loaded = await loadChain(body);
   const { chain } = loaded;
   const availableStrikes = [...new Set(loaded.contracts.map((contract) => contract.strike))].sort((a, b) => a - b);
@@ -192,24 +334,26 @@ route('POST', '/api/feed/oi-premium-decay', async (req) => {
   const end = Number(body.end) || Number(body.from) || Date.now();
   const start = Number(body.start) || (end - 500 * 1000);
   if (start >= end) throw new ApiError('start must be earlier than end', 400);
-  const { results, errors } = await fetchInBatches(contracts, start, end, limit);
-  let spotCandles = [];
-  if (chain.underlyingKey) {
-    try {
-      spotCandles = await fetchCandleRange({ key: chain.underlyingKey }, start, end, limit);
-    } catch { /* option aggregates are still useful when spot history fails */ }
-  }
+  // Contracts and the underlying go through one pool together, so spot history
+  // is no longer a second serial chain tacked on after the contracts finish.
+  const contractKeys = [...new Set(contracts.map((contract) => contract.key))];
+  const keys = chain.underlyingKey ? [...contractKeys, chain.underlyingKey] : contractKeys;
+  const { results, errors } = await fetchAllRanges(keys, start, end, limit);
+  // Option aggregates are still useful when spot history fails.
+  const spotCandles = chain.underlyingKey ? results.get(chain.underlyingKey) || [] : [];
+
   return {
     status: true,
     source: 'upstox-s1',
     interval: 'S1',
-    batchSize: BATCH_SIZE,
+    concurrency: CONCURRENCY,
+    pagesPerContract: pageCursors(start, end, limit).length,
     start,
     end,
     contracts: contracts.length,
     selectedStrikes: requestedStrikes.size ? [...requestedStrikes].sort((a, b) => a - b) : availableStrikes,
-    successfulContracts: results.size,
-    failedContracts: Object.keys(errors).length,
+    successfulContracts: contractKeys.filter((key) => (results.get(key) || []).length).length,
+    failedContracts: contractKeys.filter((key) => errors[key]).length,
     errors,
     spot: chain.spot ?? null,
     points: aggregateHistory(contracts, results, spotCandles),
