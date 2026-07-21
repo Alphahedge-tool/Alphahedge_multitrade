@@ -2717,7 +2717,8 @@ select { min-width: 96px; }
   z-index: 60;
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   flex-shrink: 0;
   min-height: 42px;
   padding: 0;
@@ -3191,7 +3192,7 @@ select { min-width: 96px; }
   white-space: nowrap;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #EEF2FF;
+  background: var(--ao-blue-bg);
   color: var(--ao-blue);
   font-size: 12px;
   font-style: normal;
@@ -3654,7 +3655,7 @@ select { min-width: 96px; }
 .positions-book-accountbar {
   min-height: 40px;
   margin-bottom: 0;
-  padding-bottom: 6px;
+  padding: 4px 0 12px;
   border-bottom: 1px solid var(--ao-border-soft);
 }
 .positions-book-table-wrap {
@@ -4042,6 +4043,35 @@ select { min-width: 96px; }
   gap: 8px;
   padding-bottom: 10px;
 }
+.order-kite-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.order-kite-section-caret {
+  flex: none;
+  color: var(--ao-caption);
+  transition: transform .15s ease;
+}
+.order-kite-section.collapsed .order-kite-section-caret {
+  transform: rotate(-90deg);
+}
+.order-kite-section-meta {
+  margin-left: auto;
+  color: var(--ao-caption);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .order-kite-section-head h2 {
   margin: 0;
   color: var(--ao-bold);
@@ -4249,3 +4279,118 @@ select { min-width: 96px; }
   }
 }
 
+
+/* Refresh chip in the Order/Trade book toolbars (ported from Admin_project). */
+.orderbook-refresh-chip {
+  height: 30px;
+  border: 1px solid var(--ao-border);
+  border-radius: 999px;
+  background: var(--ao-surface);
+  color: var(--ao-muted);
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.orderbook-refresh-chip:hover:not(:disabled) {
+  background: var(--ao-hover);
+  color: var(--ao-bold);
+}
+
+.orderbook-refresh-chip:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+/* Collapsible expiry/exchange group headers in Get Positions (theme-aware). */
+.positions-book-table-wrap .position-book-table tbody tr.position-expiry-row td {
+  height: 34px;
+  padding: 4px 14px;
+  background: var(--ao-surface-2);
+  border-top: 1px solid var(--ao-border-soft);
+  border-bottom: 1px solid var(--ao-border-soft);
+  color: var(--ao-caption);
+  text-align: left;
+}
+.position-expiry-row-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.position-expiry-caret {
+  flex: none;
+  color: var(--ao-caption);
+  transition: transform .15s ease;
+}
+.position-expiry-row.collapsed .position-expiry-caret {
+  transform: rotate(-90deg);
+}
+.position-expiry-row span {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--ao-surface);
+  border: 1px solid var(--ao-border);
+  color: var(--ao-bold);
+  font-size: 12px;
+  font-weight: 700;
+}
+.position-expiry-row small {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ao-hover);
+  color: var(--ao-caption);
+  font-size: 12px;
+  font-weight: 600;
+}
+.position-expiry-row .position-group-pnl {
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.position-group-pnl.up { color: var(--ao-green); }
+.position-group-pnl.down { color: var(--ao-red); }
+
+/* Collapse/expand-all toggle in the book toolbars. */
+.positions-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ao-border);
+  border-radius: 8px;
+  background: var(--ao-surface);
+  color: var(--ao-base);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.positions-group-toggle:hover {
+  background: var(--ao-hover);
+  color: var(--ao-bold);
+}
+.positions-group-toggle svg { transition: transform .15s ease; }
+.positions-group-toggle.collapsed svg { transform: rotate(-90deg); }

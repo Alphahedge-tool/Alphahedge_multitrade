@@ -1,3 +1,8 @@
+// Get TradeBook: today's executed fills for the selected user/account. Shares
+// the same account-selection and auto-load scaffolding as GetOrderBook, but
+// reads /api/{broker}/trade-book (returns `trades`) and renders fill-specific
+// columns. Kotak refreshes live off the portfolio (HSI) stream; Angel/Zerodha
+// load on demand and on account switch.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Info, RefreshCw, Search } from 'lucide-react'
 import { apiGet } from '../config/api'
@@ -9,20 +14,13 @@ import { CompactSelect } from './PositionSelect'
 import { useKotakPortfolioStream } from './useKotakPortfolioStream'
 import './tradepanel.css'
 
-// A push (Zerodha SSE / Kotak HSI) can be missed, and Angel has no push at all,
-// so a slow background re-read keeps every broker's book fresh as a safety net.
+// Angel/Zerodha have no trade push, and a Kotak fill push can be missed, so a
+// slow background re-read keeps the book fresh as a safety net.
 const BACKGROUND_REFRESH_MS = 15000
 
 function money(value) {
   const n = Number(value || 0)
   if (!Number.isFinite(n) || n === 0) return '-'
-  return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-// Kite renders order prices as plain numbers, including 0.00 for market orders.
-function orderMoney(value) {
-  const n = Number(value || 0)
-  if (!Number.isFinite(n)) return '0.00'
   return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
@@ -40,7 +38,7 @@ function sessionReady(client, broker) {
   return Boolean(client?.session?.jwtToken)
 }
 
-export default function GetOrderBook() {
+export default function GetTradeBook() {
   const [users, setUsers] = useState([])
   const [userId, setUserId] = useState('')
   const [configs, setConfigs] = useState([])
@@ -50,7 +48,6 @@ export default function GetOrderBook() {
   const [status, setStatus] = useState('Select a user and account')
   const [loading, setLoading] = useState(false)
   const [configLoading, setConfigLoading] = useState(false)
-  const [streamStatus, setStreamStatus] = useState('')
   const [query, setQuery] = useState('')
   const autoLoadedAccountRef = useRef('')
   const loadRef = useRef(null)
@@ -108,7 +105,7 @@ export default function GetOrderBook() {
         const list = res.data || []
         setConfigs(list)
         setConfigId(String(list[0]?.id || ''))
-        setStatus(list.length ? 'Select account, then Get Orderbook' : 'No broker accounts configured for this user')
+        setStatus(list.length ? 'Select account, then Get TradeBook' : 'No broker accounts configured for this user')
       } catch {
         if (!cancelled) setStatus('Failed to load broker accounts')
       } finally {
@@ -129,7 +126,7 @@ export default function GetOrderBook() {
       if (!configId) return
 
       if (!selectedIsSupported) {
-        setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
+        setStatus(`${selectedBrokerName || 'Selected broker'} trade book is not wired yet`)
         return
       }
 
@@ -174,7 +171,7 @@ export default function GetOrderBook() {
       return
     }
     if (!selectedIsSupported) {
-      setStatus(`${selectedBrokerName || 'Selected broker'} orderbook is not wired yet`)
+      setStatus(`${selectedBrokerName || 'Selected broker'} trade book is not wired yet`)
       return
     }
     if (!client) {
@@ -189,10 +186,10 @@ export default function GetOrderBook() {
 
     if (!silent) {
       setLoading(true)
-      setStatus('Loading orderbook...')
+      setStatus('Loading trade book...')
     }
     try {
-      const res = await fetch(`/api/${selectedBroker}/order-book`, {
+      const res = await fetch(`/api/${selectedBroker}/trade-book`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client }),
@@ -203,11 +200,11 @@ export default function GetOrderBook() {
         saveSession(configId, body.session)
         setClient((current) => (current ? { ...current, session: body.session, loggedIn: true } : current))
       }
-      const orders = body.orders || []
-      setRows(orders)
-      if (!silent) setStatus(orders.length ? `${orders.length} orders` : 'No orders found')
+      const trades = body.trades || []
+      setRows(trades)
+      if (!silent) setStatus(trades.length ? `${trades.length} trades for today` : 'No trades in trade book')
     } catch (error) {
-      if (!silent) setStatus(toOrderError(error))
+      if (!silent) setStatus(toTradeError(error))
     } finally {
       if (!silent) setLoading(false)
     }
@@ -224,69 +221,10 @@ export default function GetOrderBook() {
     load()
   }, [client, configId, load, loading, selectedBroker, selectedConfig, selectedIsSupported])
 
-  useEffect(() => {
-    if (!selectedIsZerodha || !client?.session?.accessToken) {
-      setStreamStatus('')
-      return undefined
-    }
-    const userIdForStream = client.session.userId || client.userId || client.clientCode
-    if (!userIdForStream) {
-      setStreamStatus('')
-      return undefined
-    }
-
-    let closed = false
-    const stream = new EventSource(`/api/zerodha/order-stream?userId=${encodeURIComponent(userIdForStream)}`)
-    setStreamStatus('Live order stream connecting')
-
-    const handleOrders = (event) => {
-      if (closed) return
-      try {
-        const body = JSON.parse(event.data || '{}')
-        const orders = body.orders || []
-        setRows(orders)
-        setStatus(orders.length ? `${orders.length} orders` : 'No orders found')
-        setStreamStatus(body.cached ? 'Live order stream cached' : 'Live order stream active')
-      } catch {
-        setStreamStatus('Live order stream parse failed')
-      }
-    }
-
-    const handleStatus = (event) => {
-      if (closed) return
-      try {
-        const body = JSON.parse(event.data || '{}')
-        setStreamStatus(body.message || 'Live order stream active')
-      } catch {
-        setStreamStatus('Live order stream active')
-      }
-    }
-
-    const handleErrorEvent = (event) => {
-      if (closed) return
-      try {
-        const body = JSON.parse(event.data || '{}')
-        setStreamStatus(body.message || 'Live order stream error')
-      } catch {
-        setStreamStatus('Live order stream error')
-      }
-    }
-
-    stream.addEventListener('orders', handleOrders)
-    stream.addEventListener('status', handleStatus)
-    stream.addEventListener('rate-limit', handleErrorEvent)
-    stream.addEventListener('error', handleErrorEvent)
-    stream.onerror = () => {
-      if (!closed) setStreamStatus('Live order stream reconnecting')
-    }
-
-    return () => {
-      closed = true
-      stream.close()
-    }
-  }, [client?.clientCode, client?.session?.accessToken, client?.session?.userId, selectedIsZerodha])
-
-  const scheduleOrderRefresh = useCallback(() => {
+  // A fresh fill lands on the Kotak portfolio (HSI) stream as a completed order;
+  // debounce a silent trade-book reload so the new trade shows without a manual
+  // refresh. (Angel/Zerodha have no trade push, so they stay load-on-demand.)
+  const scheduleTradeRefresh = useCallback(() => {
     window.clearTimeout(refreshTimerRef.current)
     refreshTimerRef.current = window.setTimeout(() => loadRef.current?.({ silent: true }), 900)
   }, [])
@@ -295,25 +233,19 @@ export default function GetOrderBook() {
     enabled: selectedIsKotak,
     client,
     onOrder: useCallback((order) => {
-      const orderId = String(order?.orderid || order?.nOrdNo || '')
-      if (!orderId) return
-      setRows((current) => {
-        const index = current.findIndex((row) => String(row.orderid || row.nOrdNo || '') === orderId)
-        if (index < 0) return [order, ...current]
-        return current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...order } : row))
-      })
-      scheduleOrderRefresh()
-    }, [scheduleOrderRefresh]),
-    onPosition: scheduleOrderRefresh,
+      const statusText = String(order?.orderstatus || order?.status || '').toLowerCase()
+      if (Number(order?.filledshares || 0) > 0 || statusText.includes('complete') || statusText.includes('traded')) {
+        scheduleTradeRefresh()
+      }
+    }, [scheduleTradeRefresh]),
     onResync: useCallback(() => loadRef.current?.({ silent: true }), []),
   })
   const liveStreamStatus = selectedIsKotak
     ? `Kotak portfolio stream ${kotakStreamStatus === 'live' ? 'active' : kotakStreamStatus}`
-    : streamStatus
+    : ''
 
-  // Last resort behind the streams: a push that never arrives cannot be
-  // reconnected into existence, and Angel has no order push. Skipped while the
-  // tab is hidden — coming back re-reads anyway.
+  // Last resort behind the Kotak fill push (and the only refresh Angel/Zerodha
+  // get): a slow background re-read. Skipped while the tab is hidden.
   useEffect(() => {
     if (!configId || !selectedIsSupported) return undefined
     const timer = window.setInterval(() => {
@@ -330,48 +262,34 @@ export default function GetOrderBook() {
     }
   }, [configId, selectedIsSupported])
 
-  const summary = useMemo(() => {
-    let complete = 0
-    let rejected = 0
-    let open = 0
-    for (const row of rows) {
-      const kind = orderStatusMeta(row).kind
-      if (kind === 'complete') complete += 1
-      else if (kind === 'rejected' || kind === 'cancelled') rejected += 1
-      else open += 1
-    }
-    return { complete, rejected, open }
-  }, [rows])
+  const summary = useMemo(() => buildTradeSummary(rows), [rows])
 
   const visibleRows = useMemo(() => {
     const q = query.trim().toUpperCase()
     if (!q) return rows
     return rows.filter((row) => [
       valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], ''),
-      orderStatus(row),
-      orderSide(row),
+      tradeSide(row),
       valueOf(row, ['producttype', 'product_type', 'product'], ''),
-      valueOf(row, ['ordertype', 'order_type', 'variety'], ''),
       valueOf(row, ['orderid', 'uniqueorderid'], ''),
+      valueOf(row, ['fillid', 'tradeid', 'trade_id'], ''),
+      row.exchange || '',
     ].join(' ').toUpperCase().includes(q))
   }, [query, rows])
 
-  const grouped = useMemo(() => {
-    const open = []
-    const executed = []
-    for (const row of visibleRows) {
-      (orderStatusMeta(row).open ? open : executed).push(row)
-    }
-    return { open, executed }
-  }, [visibleRows])
+  const sortedRows = useMemo(
+    () => [...visibleRows].sort((a, b) => String(tradeTime(b)).localeCompare(String(tradeTime(a)))),
+    [visibleRows],
+  )
+  const tradeGroups = useMemo(() => groupTradesByExpiry(sortedRows), [sortedRows])
 
   return (
     <div className="trade-panel">
       <div className="positions-view positions-book-view order-book-view">
         <div className="positions-book-header order-book-header">
           <div className="positions-book-title">
-            <strong>Orders{rows.length ? ` (${rows.length})` : ''}</strong>
-            <span>{selectedBrokerName || 'Broker'} orderbook — status, price and execution time</span>
+            <strong>Trades{rows.length ? ` (${rows.length})` : ''}</strong>
+            <span>{selectedBrokerName || 'Broker'} trade book — today&apos;s executed fills</span>
           </div>
           <div className="positions-book-actions order-book-actions">
             <label className="positions-book-search">
@@ -379,13 +297,13 @@ export default function GetOrderBook() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search orders"
+                placeholder="Search trades"
               />
             </label>
-            <div className="order-book-step-tags" aria-label="Order status summary">
-              <span className="order-book-step-tag pending">Open {summary.open}</span>
-              <span className="order-book-step-tag done">Complete {summary.complete}</span>
-              <span className="order-book-step-tag failed">Rejected {summary.rejected}</span>
+            <div className="order-book-step-tags" aria-label="Trade summary">
+              <span className="order-book-step-tag done">Buy {summary.buy}</span>
+              <span className="order-book-step-tag failed">Sell {summary.sell}</span>
+              <span className="order-book-step-tag pending">Turnover {money(summary.turnover)}</span>
             </div>
           </div>
         </div>
@@ -414,28 +332,27 @@ export default function GetOrderBook() {
           />
 
           <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsSupported && !client)} type="button">
-            {loading ? 'Loading' : 'Get Orderbook'}
+            {loading ? 'Loading' : 'Get TradeBook'}
           </button>
           <button
             className="orderbook-refresh-chip"
             type="button"
-            title="Refresh orderbook"
+            title="Refresh trade book"
             onClick={() => load()}
             disabled={loading || !selectedConfig || (selectedIsSupported && !client)}
           >
             <RefreshCw className={loading ? 'spin' : ''} size={13} /> Refresh
           </button>
-          {rows.length > 0 && <span className="positions-total order-book-count">{rows.length} Orders</span>}
+          {rows.length > 0 && <span className="positions-total order-book-count">{rows.length} Trades</span>}
           {status && <span className="positions-status order-book-status">{status}</span>}
           {liveStreamStatus && <span className="positions-status order-book-status live">{liveStreamStatus}</span>}
         </div>
 
         <div className="positions-table-wrap positions-book-table-wrap order-book-table-wrap">
-          {visibleRows.length > 0 ? (
-            <>
-              {grouped.open.length > 0 && <OrderSection title="Open orders" orders={grouped.open} />}
-              {grouped.executed.length > 0 && <OrderSection title="Executed orders" orders={grouped.executed} />}
-            </>
+          {sortedRows.length > 0 ? (
+            tradeGroups.map((group) => (
+              <TradeSection key={group.label} group={group} />
+            ))
           ) : (
             <div className="positions-empty order-book-empty">
               <div className="positions-empty-state">
@@ -447,7 +364,7 @@ export default function GetOrderBook() {
                 >
                   {loading ? <RefreshCw className="spin" size={18} /> : <Info size={18} />}
                 </button>
-                <strong>{loading ? 'Loading orderbook' : rows.length ? 'No orders match your search' : 'No orders'}</strong>
+                <strong>{loading ? 'Loading trade book' : rows.length ? 'No trades match your search' : 'No trades'}</strong>
               </div>
             </div>
           )}
@@ -457,39 +374,44 @@ export default function GetOrderBook() {
   )
 }
 
-function OrderSection({ title, orders }) {
+function TradeSection({ group }) {
   const [collapsed, setCollapsed] = useState(false)
+  const trades = group.rows
   return (
-    <section className={`order-kite-section${collapsed ? ' collapsed' : ''}`} aria-label={title}>
+    <section className={`order-kite-section${collapsed ? ' collapsed' : ''}`} aria-label={`Trades ${group.label}`}>
       <header className="order-kite-section-head">
         <button
           type="button"
           className="order-kite-section-toggle"
           onClick={() => setCollapsed((current) => !current)}
           aria-expanded={!collapsed}
-          title={collapsed ? 'Expand section' : 'Collapse section'}
+          title={collapsed ? 'Expand group' : 'Collapse group'}
         >
           <ChevronDown size={15} className="order-kite-section-caret" aria-hidden="true" />
-          <h2>{title} <span>({orders.length})</span></h2>
+          <h2>
+            {group.label} <span>({trades.length})</span>
+          </h2>
         </button>
+        <span className="order-kite-section-meta">
+          Buy {group.buy} · Sell {group.sell} · Turnover {money(group.turnover)}
+        </span>
       </header>
       {collapsed ? null : (
       <table className="order-kite-table">
         <thead>
           <tr>
-            <th className="col-time">Time</th>
+            <th className="col-time">Fill time</th>
             <th className="col-type">Type</th>
             <th className="col-instrument">Instrument</th>
             <th className="col-product">Product</th>
             <th className="num col-qty">Qty.</th>
-            <th className="num col-price">Price / Trigger</th>
-            <th className="num col-avg">Avg. price</th>
-            <th className="col-status">Status</th>
+            <th className="num col-price">Fill price</th>
+            <th className="num col-avg">Value</th>
           </tr>
         </thead>
         <tbody>
-          {orders.map((row, index) => (
-            <OrderRow row={row} key={orderKey(row, index)} />
+          {trades.map((row, index) => (
+            <TradeRow row={row} key={tradeRowKey(row, index)} />
           ))}
         </tbody>
       </table>
@@ -498,53 +420,58 @@ function OrderSection({ title, orders }) {
   )
 }
 
-function OrderRow({ row }) {
-  const sideRaw = String(orderSide(row) || '').toUpperCase()
-  const sideKind = sideRaw === 'SELL' ? 'sell' : 'buy'
-  const statusMeta = orderStatusMeta(row)
+function groupTradesByExpiry(rows) {
+  const groups = new Map()
+  for (const row of rows) {
+    const symbol = String(valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], '-'))
+    const label = parseTradingSymbol(symbol).expiry || 'No Expiry'
+    const group = groups.get(label) || { label, rows: [], buy: 0, sell: 0, turnover: 0 }
+    group.rows.push(row)
+    group.turnover += tradeValue(row)
+    if (tradeSide(row) === 'SELL') group.sell += 1
+    else group.buy += 1
+    groups.set(label, group)
+  }
+  return [...groups.values()]
+}
+
+function TradeRow({ row }) {
+  const side = tradeSide(row)
+  const sideKind = side === 'SELL' ? 'sell' : 'buy'
   const product = bookProductTag(valueOf(row, ['producttype', 'product_type', 'product']))
-  const orderType = orderTypeMeta(valueOf(row, ['ordertype', 'order_type'], ''))
-  const filled = Number(valueOf(row, ['filledshares', 'filled_quantity'], 0)) || 0
-  const qty = Number(valueOf(row, ['quantity', 'qty'], 0)) || 0
-  const price = Number(valueOf(row, ['price', 'orderprice'], 0)) || 0
-  const trigger = Number(valueOf(row, ['triggerprice', 'trigger_price'], 0)) || 0
-  const avg = Number(valueOf(row, ['averageprice', 'average_price'], 0)) || 0
-  const reason = String(valueOf(row, ['text', 'status_message', 'statusmessage'], '')).trim()
-  const time = orderTimeParts(row)
+  const qty = tradeQty(row)
+  const lot = Number(valueOf(row, ['marketlot', 'lotsize', 'lot_size'], 0)) || 0
+  const price = tradePrice(row)
+  const value = tradeValue(row)
+  const time = tradeTimeParts(row)
   const orderId = valueOf(row, ['orderid', 'uniqueorderid'], '')
+  const fillId = valueOf(row, ['fillid', 'tradeid', 'trade_id'], '')
 
   return (
-    <tr className={`order-kite-row ${statusMeta.kind}`}>
-      <td className="col-time" title={[time.full, orderId && `Order ${orderId}`].filter(Boolean).join(' — ')}>
+    <tr className={`order-kite-row ${sideKind}`}>
+      <td className="col-time" title={[time.full, fillId && `Fill ${fillId}`, orderId && `Order ${orderId}`].filter(Boolean).join(' — ')}>
         {time.clock}
       </td>
       <td className="col-type">
-        <span className={`order-kite-side ${sideKind}`}>{sideRaw || 'BUY'}</span>
+        <span className={`order-kite-side ${sideKind}`}>{side}</span>
       </td>
-      <td className="col-instrument"><OrderInstrumentCell row={row} /></td>
+      <td className="col-instrument"><TradeInstrumentCell row={row} /></td>
       <td className="col-product">
         <div className="order-kite-product-cell">
           <span className="book-tag product">{product}</span>
-          {orderType.label && <span className={`order-kite-variety ${orderType.kind}`}>{orderType.label}</span>}
         </div>
       </td>
       <td className="num col-qty">
-        <span className="order-kite-qty"><em>{filled.toLocaleString('en-IN')}</em> / {qty.toLocaleString('en-IN')}</span>
+        <span className="order-kite-qty">
+          {qty.toLocaleString('en-IN')}
+          {lot > 1 && <small> / {lot} lot</small>}
+        </span>
       </td>
       <td className="num col-price">
-        <span className="order-kite-price">
-          {orderMoney(price)}
-          {trigger > 0 && <small> / {orderMoney(trigger)} trg.</small>}
-        </span>
+        <span className="order-kite-price">{money(price)}</span>
       </td>
       <td className="num col-avg">
-        {avg > 0 ? <span className="order-kite-price">{money(avg)}</span> : <span className="position-price-muted">-</span>}
-      </td>
-      <td className="col-status">
-        <span className={`order-kite-status ${statusMeta.kind}`} title={reason || statusMeta.label}>
-          {statusMeta.label}
-          {reason && <Info size={12} />}
-        </span>
+        {value > 0 ? <span className="order-kite-price">{money(value)}</span> : <span className="position-price-muted">-</span>}
       </td>
     </tr>
   )
@@ -552,7 +479,7 @@ function OrderRow({ row }) {
 
 // Kite-style instrument line: "SENSEX 9th JUL 74100 PE" with the expiry-day
 // ordinal superscripted and the exchange as a small muted suffix.
-function OrderInstrumentCell({ row }) {
+function TradeInstrumentCell({ row }) {
   const symbol = String(valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], '-'))
   const parsed = parseTradingSymbol(symbol)
   const expiry = splitExpiryDay(parsed.expiry)
@@ -583,60 +510,65 @@ function ordinalSuffix(day) {
   return { 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] || 'th'
 }
 
-function orderStatusMeta(row) {
-  const upper = String(orderStatus(row) || '').trim().toUpperCase()
-  if (/COMPLETE|TRADED|EXECUTED|FILLED/.test(upper)) return { label: upper || 'COMPLETE', kind: 'complete', open: false }
-  if (/REJECT/.test(upper)) return { label: upper || 'REJECTED', kind: 'rejected', open: false }
-  if (/CANCEL/.test(upper)) return { label: upper || 'CANCELLED', kind: 'cancelled', open: false }
-  return { label: upper || 'PENDING', kind: 'open', open: true }
+function tradeSide(row) {
+  return String(valueOf(row, ['transactiontype', 'transaction_type', 'side', 'action'], '')).toUpperCase() === 'SELL'
+    ? 'SELL'
+    : 'BUY'
 }
 
-function orderTimeParts(row) {
-  const full = String(valueOf(row, ['updatetime', 'exchtime', 'orderentrytime', 'order_timestamp', 'time'], '')).trim()
+function tradeQty(row) {
+  return Number(valueOf(row, ['fillsize', 'fillSize', 'quantity', 'qty', 'filled_quantity'], 0)) || 0
+}
+
+function tradePrice(row) {
+  return Number(valueOf(row, ['fillprice', 'fillPrice', 'average_price', 'averageprice', 'price'], 0)) || 0
+}
+
+function tradeValue(row) {
+  const direct = Number(valueOf(row, ['tradevalue', 'trade_value'], 0))
+  if (Number.isFinite(direct) && direct > 0) return direct
+  return tradePrice(row) * tradeQty(row)
+}
+
+function tradeTime(row) {
+  return valueOf(row, ['filltime', 'fill_timestamp', 'exchange_timestamp', 'updatetime', 'exchtime', 'time'], '')
+}
+
+function tradeTimeParts(row) {
+  const full = String(tradeTime(row)).trim()
   const clock = full.match(/\d{1,2}:\d{2}(?::\d{2})?/)?.[0] || ''
   return { clock: clock || full || '-', full }
 }
 
-function orderSide(row) {
-  return valueOf(row, ['transactiontype', 'transaction_type', 'side', 'action'])
+function buildTradeSummary(rows) {
+  return rows.reduce((acc, row) => {
+    const qty = tradeQty(row)
+    acc.turnover += tradeValue(row)
+    if (tradeSide(row) === 'SELL') {
+      acc.sell += 1
+      acc.sellQty += qty
+    } else {
+      acc.buy += 1
+      acc.buyQty += qty
+    }
+    return acc
+  }, { buy: 0, sell: 0, buyQty: 0, sellQty: 0, turnover: 0 })
 }
 
-function orderStatus(row) {
-  return valueOf(row, ['status', 'orderstatus', 'order_status', 'text'])
-}
-
-function orderTypeMeta(value) {
-  const raw = String(value || '').trim()
-  const key = raw.toUpperCase().replace(/[\s-]+/g, '_')
-  if (!key) return { label: '', kind: 'market' }
-  if (key === 'MARKET' || key === 'MKT') return { label: 'MARKET', kind: 'market' }
-  if (key === 'LIMIT' || key === 'LMT') return { label: 'LIMIT', kind: 'limit' }
-  if (key === 'SL_M' || key === 'STOPLOSS_MARKET' || key === 'STOP_LOSS_MARKET') return { label: 'SL-M', kind: 'slm' }
-  if (
-    key === 'SL' ||
-    key === 'STOPLOSS_LIMIT' ||
-    key === 'STOP_LOSS_LIMIT' ||
-    key === 'OPLOSS_LIMIT' ||
-    key === 'STOPLOSS'
-  ) {
-    return { label: 'SL-LIMIT', kind: 'sllimit' }
-  }
-  return { label: raw.replace(/_/g, ' '), kind: 'custom' }
-}
-
-function orderKey(row, fallback) {
+function tradeRowKey(row, fallback) {
   return [
+    valueOf(row, ['fillid', 'tradeid', 'trade_id'], ''),
     valueOf(row, ['orderid', 'uniqueorderid'], ''),
     valueOf(row, ['tradingsymbol', 'symbolname', 'symbol'], ''),
-    valueOf(row, ['updatetime', 'exchtime', 'orderentrytime'], ''),
+    tradeTime(row),
     fallback,
   ].filter(Boolean).join('|')
 }
 
-function toOrderError(error) {
+function toTradeError(error) {
   const message = String(error?.message || '')
   if (/session|login|auth|token|jwt|unauthor/i.test(message)) {
     return 'This account is not logged in. Login from Broker Configuration first.'
   }
-  return message || 'Failed to load orderbook'
+  return message || 'Failed to load trade book'
 }
