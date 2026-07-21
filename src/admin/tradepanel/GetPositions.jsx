@@ -2,7 +2,7 @@
 // Angel One is wired today; other brokers can be selected and added later.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, ArrowUpDown, Check, Download, Filter, Flame, Info, Layers, Search, Settings2, X } from 'lucide-react';
+import { Activity, ArrowUpDown, Check, ChevronDown, Download, Filter, Flame, Info, Layers, Search, Settings2, X } from 'lucide-react';
 import { apiGet, apiPost } from '../config/api';
 import {
   buildClient, getSavedSession, isAngelBroker, isKotakBroker, isZerodhaBroker, saveSession,
@@ -92,6 +92,10 @@ export default function GetPositions() {
   const [filters, setFilters] = useState(defaultPositionFilters);
   const [openFilter, setOpenFilter] = useState('');
   const [selectedPositionKeys, setSelectedPositionKeys] = useState(() => new Set());
+  // Expiry/exchange group keys the user has collapsed (their rows hidden under
+  // the header). Grouping only applies while sorted by instrument (the
+  // expiry-ordered sort) so same-group rows stay contiguous.
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [strategyDialogOpen, setStrategyDialogOpen] = useState(false);
   const [strategyName, setStrategyName] = useState('');
   const [strategyError, setStrategyError] = useState('');
@@ -299,8 +303,13 @@ export default function GetPositions() {
     load();
   }, [client, configId, load, loading, selectedBroker, selectedConfig, selectedIsSupported]);
 
-  const kotakMarketInstruments = useMemo(() => {
-    if (!selectedIsKotak) return [];
+  // Both Kotak (HSM) and Angel (SmartWebSocket V2) stream through the shared
+  // /ws/feed backend, so the same hook drives live LTP/P&L for either broker;
+  // only the broker name and enable flag change. Zerodha has no feed adapter,
+  // so it stays REST-only.
+  const marketFeedEnabled = selectedIsKotak || selectedIsAngel;
+  const marketInstruments = useMemo(() => {
+    if (!marketFeedEnabled) return [];
     return rows
       .filter((row) => Number(row.netqty || 0) !== 0 && (row.brokerToken || row.symboltoken))
       .map((row) => ({
@@ -308,11 +317,11 @@ export default function GetPositions() {
         token: String(row.brokerToken || row.symboltoken),
         symbol: row.canonicalSymbol || row.tradingsymbol,
       }));
-  }, [rows, selectedIsKotak]);
+  }, [rows, marketFeedEnabled]);
   const { status: marketFeedStatus, ticks: marketTicks } = useBrokerMarketFeed({
-    broker: 'kotak',
-    instruments: kotakMarketInstruments,
-    enabled: selectedIsKotak,
+    broker: selectedBroker,
+    instruments: marketInstruments,
+    enabled: marketFeedEnabled,
   });
   const liveRows = useMemo(
     () => rows.map((row) => withLivePositionTick(row, marketTicks)),
@@ -379,8 +388,32 @@ export default function GetPositions() {
   const filterOptions = useMemo(() => buildFilterOptions(liveRows), [liveRows]);
   const visibleRows = useMemo(() => sortPositionRows(filterPositionRows(liveRows, filters), sort), [liveRows, filters, sort]);
   const quantityOverview = useMemo(() => buildQuantityOverview(liveRows), [liveRows]);
-  const tableRows = useMemo(() => visibleRows.map((row) => ({ type: 'row', row })), [visibleRows]);
+  // Group into expiry/exchange sections (with collapse) only while sorted by
+  // instrument; any other sort scatters a group's rows, so fall back to a flat
+  // list to avoid duplicate headers.
+  const grouped = sort.key === 'instrument';
+  const tableRows = useMemo(() => (
+    grouped
+      ? groupPositionsByExpiryAndExchange(visibleRows)
+      : visibleRows.map((row) => ({ type: 'row', row }))
+  ), [grouped, visibleRows]);
+  const groupKeys = useMemo(
+    () => tableRows.filter((item) => item.type === 'group').map((item) => item.key),
+    [tableRows],
+  );
+  const allCollapsed = groupKeys.length > 0 && groupKeys.every((key) => collapsedGroups.has(key));
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
+  const toggleGroupCollapsed = useCallback((key) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const setAllCollapsed = useCallback((collapse) => {
+    setCollapsedGroups(collapse ? new Set(groupKeys) : new Set());
+  }, [groupKeys]);
   const togglePositionSelection = useCallback((key) => {
     setSelectedPositionKeys((current) => {
       const next = new Set(current);
@@ -534,6 +567,17 @@ export default function GetPositions() {
           <button className="positions-load-btn" onClick={load} disabled={loading || !selectedConfig || (selectedIsSupported && !client)} type="button">
             {loading ? 'Loading' : 'Get Positions'}
           </button>
+          {grouped && groupKeys.length > 0 && (
+            <button
+              type="button"
+              className={`positions-group-toggle${allCollapsed ? ' collapsed' : ''}`}
+              onClick={() => setAllCollapsed(!allCollapsed)}
+              title={allCollapsed ? 'Expand all groups' : 'Collapse all groups'}
+            >
+              <ChevronDown size={14} />
+              {allCollapsed ? 'Expand all' : 'Collapse all'}
+            </button>
+          )}
           {quantityOverview.length > 0 && (
             <div className="position-quantity-inline" aria-label="Open CE and PE long and short quantity">
               {quantityOverview.map((group) => (
@@ -562,6 +606,11 @@ export default function GetPositions() {
                 </div>
               ))}
             </div>
+          )}
+          {selectedIsAngel && (
+            <span className={`live-pill ${marketFeedStatus === 'live' ? 'on' : 'off'}`} title="Angel SmartWebSocket V2 market/LTP feed">
+              <span className="live-dot" />LTP {marketFeedStatus === 'live' ? 'LIVE' : marketFeedStatus === 'connecting' ? 'CONNECTING' : 'OFF'}
+            </span>
           )}
           {selectedIsKotak && (
             <>
@@ -618,6 +667,34 @@ export default function GetPositions() {
             </thead>
             <tbody>
               {tableRows.map((item, i) => {
+                if (item.type === 'group') {
+                  const collapsed = collapsedGroups.has(item.key);
+                  return (
+                    <tr
+                      key={`group-${item.key}-${i}`}
+                      className={`position-expiry-row${collapsed ? ' collapsed' : ''}`}
+                    >
+                      <td colSpan={POSITION_COLUMNS.length}>
+                        <button
+                          type="button"
+                          className="position-expiry-row-content"
+                          onClick={() => toggleGroupCollapsed(item.key)}
+                          aria-expanded={!collapsed}
+                          title={collapsed ? 'Expand group' : 'Collapse group'}
+                        >
+                          <ChevronDown size={14} className="position-expiry-caret" aria-hidden="true" />
+                          <span>{item.expiry}</span>
+                          <small>{item.exchange}</small>
+                          <small>{item.count} position{item.count === 1 ? '' : 's'}</small>
+                          <strong className={`position-group-pnl ${item.pnl >= 0 ? 'up' : 'down'}`}>
+                            P&amp;L {signedMoney(item.pnl)}
+                          </strong>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }
+                if (collapsedGroups.has(item.groupKey)) return null;
                 const rowKey = positionRowKey(item.row, i);
                 const selected = selectedPositionKeys.has(rowKey);
                 const qty = Number(item.row.netqty || 0);
@@ -792,6 +869,7 @@ function groupPositionsByExpiryAndExchange(rows) {
     if (group.key !== last) {
       out.push({
         type: 'group',
+        key: group.key,
         expiry: group.expiry,
         exchange: group.exchange,
         count: counts.get(group.key) || 0,
@@ -799,7 +877,7 @@ function groupPositionsByExpiryAndExchange(rows) {
       });
       last = group.key;
     }
-    out.push({ type: 'row', row });
+    out.push({ type: 'row', groupKey: group.key, row });
   }
   return out;
 }
