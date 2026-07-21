@@ -11,6 +11,7 @@ import UsersPage from './pages/UsersPage'
 import Feedmaster from './pages/Feedmaster'
 import GetPositions from './tradepanel/GetPositions'
 import GetOrderBook from './tradepanel/GetOrderBook'
+import GetTradeBook from './tradepanel/GetTradeBook'
 import OptionChainPage from './tradepanel/OptionChainPage'
 import MiniChainWindow from './tradepanel/MiniChainWindow'
 import Placeholder from './pages/Placeholder'
@@ -79,6 +80,7 @@ export default function AdminApp() {
               <Route path="trade-panel/enter-trade" element={null} />
               <Route path="trade-panel/option-chain" element={<OptionChainPage />} />
               <Route path="trade-panel/orderbook" element={<GetOrderBook />} />
+              <Route path="trade-panel/tradebook" element={<GetTradeBook />} />
               <Route path="trade-panel/positions" element={<GetPositions />} />
               <Route path="trade-panel" element={<Navigate to="/admin/trade-panel/enter-trade" replace />} />
             </Route>
