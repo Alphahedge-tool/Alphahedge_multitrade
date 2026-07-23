@@ -87,7 +87,8 @@
   --oc-oi-col-w: 132px;
   --oc-bidask-col-w: 148px;
   --oc-ltp-col-w: 120px;
-  --oc-side-table-min-w: calc((var(--oc-greek-col-w) * 5) + var(--oc-oi-col-w) + var(--oc-bidask-col-w) + var(--oc-ltp-col-w));
+  --oc-val-col-w: 82px;
+  --oc-side-table-min-w: calc((var(--oc-greek-col-w) * 5) + var(--oc-oi-col-w) + var(--oc-bidask-col-w) + (var(--oc-val-col-w) * 4) + var(--oc-ltp-col-w));
   --oc-full-table-min-w: calc((var(--oc-side-table-min-w) * 2) + var(--oc-strike-col-w));
   display: flex;
   flex-direction: column;
@@ -480,6 +481,7 @@
 .oc-table .oc-col-oi { width: var(--oc-oi-col-w); }
 .oc-table .oc-col-bidask { width: var(--oc-bidask-col-w); }
 .oc-table .oc-col-ltp { width: var(--oc-ltp-col-w); }
+.oc-table .oc-col-val { width: var(--oc-val-col-w); }
 .oc-table .oc-col-iv,
 .oc-table .oc-col-greek { width: var(--oc-greek-col-w); }
 .oc-table .oc-col-strike { width: var(--oc-strike-col-w); }
@@ -702,6 +704,26 @@
   font-size: 0.74rem;
   text-align: right;
 }
+
+/* Intrinsic / Extrinsic (time value) cells. Intrinsic is the real in-the-money
+   worth; extrinsic is what's left of the premium (decays to 0 at expiry). */
+.oc-val {
+  font-size: 0.76rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.oc-intr { color: var(--ao-base); font-weight: 600; }
+.oc-extr { color: var(--ao-caption); }
+/* Extrinsic below zero means LTP has drifted under intrinsic (stale/illiquid
+   quote or crossed spot) — flag it so it isn't read as genuine time value. */
+.oc-extr.oc-neg { color: var(--ao-red); }
+/* Theoretical extrinsic (Black-Scholes at the reference IV). */
+.oc-theo { color: var(--ao-blue); }
+/* Diff = actual − theoretical extrinsic. Rich (trading above model) = red,
+   cheap (below model) = green, so the skew reads at a glance. */
+.oc-diff { color: var(--ao-caption); font-weight: 600; }
+.oc-diff.oc-rich { color: var(--ao-red); }
+.oc-diff.oc-cheap { color: var(--ao-green); }
 
 /* Bid/Ask cell — bid green, ask red, subtle separator. */
 .oc-bidask {

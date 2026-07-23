@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
-import { Filter, RefreshCw, Radio, Rows3, X, Zap, ZapOff } from 'lucide-react'
+import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Select, TextField, Typography } from '@mui/material'
+import { Filter, RefreshCw, Radio, Rows3, Sigma, X, Zap, ZapOff } from 'lucide-react'
 import {
-  ROW_HEIGHT, greek, liveAskFromTicks, liveBidFromTicks, liveGreekFromTicks, liveLtpFromTicks,
+  DASH, ROW_HEIGHT, greek, liveAskFromTicks, liveBidFromTicks, liveGreekFromTicks, liveLtpFromTicks,
   liveOiFromTicks, liveTickStore, num, oiWidth, px, tickKey, useLiveMeta, useLiveTicks,
 } from './chainLive'
 import { INDEX_UNDERLYINGS, MCX_UNDERLYINGS, chainExchangeFor, upstoxExchange } from './chainSymbols'
@@ -11,6 +11,79 @@ import './optionchain.css'
 
 const VIRTUAL_ROW_THRESHOLD = 160
 const VIRTUAL_OVERSCAN = 8
+
+// Intrinsic (in-the-money) value of an option given the live spot and its strike.
+// CALL is worth spot − strike when spot is above the strike; PUT is worth
+// strike − spot when spot is below it; otherwise it's out-of-the-money → 0.
+// The remaining premium (LTP − intrinsic) is the extrinsic / time value.
+function intrinsicValue(side, spot, strike) {
+  const s = Number(spot)
+  const k = Number(strike)
+  if (!Number.isFinite(s) || !Number.isFinite(k)) return null
+  return Math.max(0, side === 'put' ? k - s : s - k)
+}
+
+// ── Theoretical (Black-Scholes) value ───────────────────────────────────────
+// We price every strike with a SINGLE reference volatility (the ATM IV, or a
+// user override) so the model's extrinsic value can be compared against what
+// the strike is actually trading. Pricing a strike with its OWN IV would just
+// reproduce the market premium — the gap would always be zero. The gap we DO
+// surface is the skew/richness each strike carries versus that flat reference.
+const RISK_FREE_RATE = 0.065 // ~India 91-day T-bill; only shifts deep-ITM theo slightly.
+
+// Standard-normal CDF via an erf approximation (Abramowitz & Stegun 7.1.26).
+function normCdf(x) {
+  const sign = x < 0 ? -1 : 1
+  const z = Math.abs(x) / Math.SQRT2
+  const t = 1 / (1 + 0.3275911 * z)
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z)
+  return 0.5 * (1 + sign * y)
+}
+
+// Black-Scholes European price (no dividend). S spot, K strike, T years,
+// r rate, sigma vol as a fraction. Returns null when inputs can't be priced.
+function bsPrice(side, S, K, T, r, sigma) {
+  if (!(S > 0 && K > 0 && T > 0 && sigma > 0)) return null
+  const sqrtT = Math.sqrt(T)
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * sqrtT)
+  const d2 = d1 - sigma * sqrtT
+  const disc = Math.exp(-r * T)
+  return side === 'put'
+    ? K * disc * normCdf(-d2) - S * normCdf(-d1)
+    : S * normCdf(d1) - K * disc * normCdf(d2)
+}
+
+// Theoretical extrinsic = Black-Scholes premium (at the reference IV) minus the
+// option's intrinsic value. ivPct is a percentage (Upstox IV units).
+function theoreticalExtrinsic(side, spot, strike, tYears, ivPct) {
+  const price = bsPrice(side, Number(spot), Number(strike), Number(tYears), RISK_FREE_RATE, Number(ivPct) / 100)
+  if (price == null) return null
+  const intr = intrinsicValue(side, spot, strike)
+  return intr == null ? null : price - intr
+}
+
+// Expiry (Angel "DDMMMYYYY", "YYYY-MM-DD", or "YYYYMMDD") → ISO YYYY-MM-DD.
+function expiryToISO(expiry) {
+  const s = String(expiry || '').trim().toUpperCase()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+  const m = s.match(/^(\d{2})([A-Z]{3})(\d{4})$/)
+  if (m) {
+    const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+    const mi = MON.indexOf(m[2])
+    if (mi >= 0) return `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1]}`
+  }
+  return ''
+}
+
+// Year-fraction from now to expiry, using the 15:30 IST (10:00 UTC) close.
+function expiryToYears(expiry) {
+  const iso = expiryToISO(expiry)
+  if (!iso) return null
+  const ms = Date.parse(`${iso}T10:00:00Z`)
+  if (Number.isNaN(ms)) return null
+  return Math.max(0, (ms - Date.now()) / (365 * 24 * 3600 * 1000))
+}
 
 // Option-chain filter fields. Each knows how to pull its value from a strike's
 // row (side-aware for premium/greeks; "strike" ignores side). `step` sets the
@@ -79,7 +152,7 @@ function buildFilterPredicate(filter) {
 // whose values actually changed — not the whole table — keeping horizontal
 // scroll smooth while prices stream in.
 const CallRow = memo(function CallRow({
-  strike, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  strike, spot, refIvPct, tYears, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
   restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
   const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
@@ -94,6 +167,13 @@ const CallRow = memo(function CallRow({
   const vega = liveGreekFromTicks(upTick, 'vega', restVega)
   const ltpLive = angelTick?.ltp != null || upTick?.ltp != null
   const baLive = angelTick?.bid != null || upTick?.bid != null
+  // CALL intrinsic = max(0, spot − strike); extrinsic (time value) = LTP − intrinsic.
+  const intrinsic = intrinsicValue('call', spot, strike)
+  const extrinsic = intrinsic == null || ltp == null ? null : Number(ltp) - intrinsic
+  // Theoretical extrinsic at the reference IV, and how far the live extrinsic
+  // sits above (rich) / below (cheap) it.
+  const theoExtr = refIvPct == null ? null : theoreticalExtrinsic('call', spot, strike, tYears, refIvPct)
+  const diff = extrinsic == null || theoExtr == null ? null : extrinsic - theoExtr
 
   return (
     <tr className={`oc-row${isAtm ? ' oc-atm' : ''}${dimmed ? ' oc-dimmed' : ''}`}>
@@ -104,6 +184,10 @@ const CallRow = memo(function CallRow({
       <td className="oc-greek">{greek(vega, 2)}</td>
       <td className={`oc-oi oc-call-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth(oi, maxOi)}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
       <td className={`oc-bidask${baLive ? ' oc-live' : ''}`}><span className="oc-bid">{px(bid)}</span><span className="oc-sep">/</span><span className="oc-ask">{px(ask)}</span></td>
+      <td className="oc-val oc-intr">{px(intrinsic)}</td>
+      <td className={`oc-val oc-extr${extrinsic != null && extrinsic < 0 ? ' oc-neg' : ''}`}>{px(extrinsic)}</td>
+      <td className="oc-val oc-theo">{px(theoExtr)}</td>
+      <td className={`oc-val oc-diff${diff == null ? '' : diff > 0 ? ' oc-rich' : diff < 0 ? ' oc-cheap' : ''}`}>{diff == null ? DASH : `${diff > 0 ? '+' : ''}${diff.toFixed(2)}`}</td>
       <td className={`oc-ltp${itm ? ' oc-itm' : ''}${ltpLive ? ' oc-live' : ''}`}>{px(ltp)}</td>
     </tr>
   )
@@ -111,7 +195,7 @@ const CallRow = memo(function CallRow({
 
 // One PUT-side row (mirror column order), memoized for the same reason.
 const PutRow = memo(function PutRow({
-  strike, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
+  strike, spot, refIvPct, tYears, isAtm, itm, dimmed, restIv, restDelta, restGamma, restTheta, restVega, restOi,
   restBid, restAsk, restLtp, maxOi, angelToken, upToken, wsBroker,
 }) {
   const [angelTick, upTick] = useLiveTicks([tickKey('angel', angelToken), tickKey('upstox', upToken)])
@@ -126,10 +210,20 @@ const PutRow = memo(function PutRow({
   const vega = liveGreekFromTicks(upTick, 'vega', restVega)
   const ltpLive = angelTick?.ltp != null || upTick?.ltp != null
   const baLive = angelTick?.bid != null || upTick?.bid != null
+  // PUT intrinsic = max(0, strike − spot); extrinsic (time value) = LTP − intrinsic.
+  const intrinsic = intrinsicValue('put', spot, strike)
+  const extrinsic = intrinsic == null || ltp == null ? null : Number(ltp) - intrinsic
+  // Theoretical extrinsic at the reference IV, and the live rich/cheap gap.
+  const theoExtr = refIvPct == null ? null : theoreticalExtrinsic('put', spot, strike, tYears, refIvPct)
+  const diff = extrinsic == null || theoExtr == null ? null : extrinsic - theoExtr
 
   return (
     <tr className={`oc-row${isAtm ? ' oc-atm' : ''}${dimmed ? ' oc-dimmed' : ''}`}>
       <td className={`oc-ltp${itm ? ' oc-itm' : ''}${ltpLive ? ' oc-live' : ''}`}>{px(ltp)}</td>
+      <td className={`oc-val oc-diff${diff == null ? '' : diff > 0 ? ' oc-rich' : diff < 0 ? ' oc-cheap' : ''}`}>{diff == null ? DASH : `${diff > 0 ? '+' : ''}${diff.toFixed(2)}`}</td>
+      <td className="oc-val oc-theo">{px(theoExtr)}</td>
+      <td className={`oc-val oc-extr${extrinsic != null && extrinsic < 0 ? ' oc-neg' : ''}`}>{px(extrinsic)}</td>
+      <td className="oc-val oc-intr">{px(intrinsic)}</td>
       <td className={`oc-bidask${baLive ? ' oc-live' : ''}`}><span className="oc-bid">{px(bid)}</span><span className="oc-sep">/</span><span className="oc-ask">{px(ask)}</span></td>
       <td className={`oc-oi oc-put-oi${itm ? ' oc-itm' : ''}`}><span className="oc-oi-bar" style={{ width: `${oiWidth(oi, maxOi)}%` }} /><span className="oc-oi-val">{num(oi)}</span></td>
       <td className="oc-greek">{greek(iv, 1)}</td>
@@ -190,6 +284,9 @@ export default function OptionChain() {
   const [filterOpen, setFilterOpen] = useState(false)
   // Mini chain widget: a floating LTP-only view of the SAME loaded chain.
   const [miniOpen, setMiniOpen] = useState(false)
+  // Theoretical value: reference IV (%) used to price every strike. Blank = auto
+  // (the chain's ATM IV). A number here overrides it for the whole ladder.
+  const [theoIvInput, setTheoIvInput] = useState('')
 
   const chainExchange = chainExchangeFor(symbol)
 
@@ -573,6 +670,34 @@ export default function OptionChain() {
   const [spotTick] = useLiveTicks([tickKey('angel', chain?.spotToken)])
   const spotLtp = spotTick?.ltp != null ? spotTick.ltp : chain?.spot
 
+  // Reference IV (%) for theoretical pricing: the ATM strike's IV (avg of its
+  // call & put), falling back to the nearest strike that has an IV. Read from
+  // the hydrated Upstox overlay — a stable baseline, so it doesn't churn the
+  // whole table on every ATM IV tick.
+  const atmIv = useMemo(() => {
+    const al = chain?.upstox?.aligned
+    const strikes = chain?.strikes
+    if (!al || !strikes?.length || atm == null) return null
+    const ivAt = (idx) => {
+      const vals = [al.callGreeks?.[idx]?.iv, al.putGreeks?.[idx]?.iv]
+        .map(Number).filter((v) => Number.isFinite(v) && v > 0)
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
+    }
+    const i = strikes.findIndex((s) => Number(s) === Number(atm))
+    if (i >= 0) { const v = ivAt(i); if (v != null) return v }
+    // Widen outward from the ATM index until a strike carries an IV.
+    for (let d = 1; d < strikes.length; d++) {
+      for (const idx of [i - d, i + d]) {
+        if (idx >= 0 && idx < strikes.length) { const v = ivAt(idx); if (v != null) return v }
+      }
+    }
+    return null
+  }, [chain, atm])
+  // Effective reference IV: user override (a positive number) else auto ATM IV.
+  const theoIvNum = Number(theoIvInput)
+  const refIvPct = theoIvInput !== '' && Number.isFinite(theoIvNum) && theoIvNum > 0 ? theoIvNum : atmIv
+  const tYears = useMemo(() => expiryToYears(chain?.expiry || expiry), [chain?.expiry, expiry])
+
   // Filter: matched strike indices (null = no active filter). Reads premium/OI
   // from the base chain and greeks from the Upstox overlay. Small result set, so
   // matched rows render without virtualizing.
@@ -706,6 +831,21 @@ export default function OptionChain() {
             {wsBrokerOptions.map((b) => <MenuItem key={b} value={b}>{b[0].toUpperCase() + b.slice(1)}</MenuItem>)}
           </Select>
         </FormControl>
+
+        {/* Reference IV for the theoretical (Theo/Diff) columns. Blank = the
+            chain's ATM IV (shown as the placeholder); a number prices the whole
+            ladder at that vol so the Diff reveals the skew vs your assumption. */}
+        <TextField
+          size="small"
+          type="number"
+          label="Theo IV %"
+          value={theoIvInput}
+          onChange={(e) => setTheoIvInput(e.target.value)}
+          placeholder={atmIv != null ? `ATM ${atmIv.toFixed(1)}` : 'auto'}
+          InputLabelProps={{ shrink: true }}
+          sx={{ width: 116 }}
+          title="Volatility used to price the theoretical extrinsic value. Blank uses the ATM IV."
+        />
         </Box>
 
         <Box className="oc-controls-status">
@@ -739,6 +879,16 @@ export default function OptionChain() {
           {enriching && <Chip size="small" variant="outlined" label="Hydrating Greeks" />}
           {chain && <Chip size="small" label={`Spot ${px(spotLtp)}`} variant="outlined" />}
           {chain && <Chip size="small" label={`ATM ${num(atm)}`} />}
+          {chain && refIvPct != null && tYears != null && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={theoIvInput !== '' && Number(theoIvInput) > 0 ? 'primary' : 'default'}
+              icon={<Sigma size={12} />}
+              label={`Theo @ ${refIvPct.toFixed(1)}% IV · ${(tYears * 365).toFixed(1)}d`}
+              title={theoIvInput !== '' && Number(theoIvInput) > 0 ? 'Using your override IV' : 'Using the ATM IV'}
+            />
+          )}
         </Box>
       </Box>
 
@@ -885,14 +1035,14 @@ export default function OptionChain() {
               <table className="oc-table oc-side-table">
                 <colgroup>
                   <col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" />
-                  <col className="oc-col-oi" /><col className="oc-col-bidask" /><col className="oc-col-ltp" />
+                  <col className="oc-col-oi" /><col className="oc-col-bidask" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-ltp" />
                 </colgroup>
                 <thead>
-                  <tr className="oc-side-head"><th className="oc-call" colSpan={8}>CALL</th></tr>
-                  <tr className="oc-col-head"><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>OI</th><th>Bid / Ask</th><th className="oc-ltp">LTP</th></tr>
+                  <tr className="oc-side-head"><th className="oc-call" colSpan={12}>CALL</th></tr>
+                  <tr className="oc-col-head"><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>OI</th><th>Bid / Ask</th><th title="Intrinsic value = max(0, Spot − Strike)">Intr</th><th title="Extrinsic (time) value = LTP − Intrinsic">Extr</th><th title="Theoretical extrinsic = Black-Scholes price at the reference IV − Intrinsic">Theo</th><th title="Extr − Theo. Positive = trading rich vs the reference IV; negative = cheap.">Diff</th><th className="oc-ltp">LTP</th></tr>
                 </thead>
                 <tbody>
-                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: topPad }} /></tr>}
+                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={12} style={{ height: topPad }} /></tr>}
                   {rowIndexes.map((i) => {
                     const strike = chain.strikes[i]
                     const cg = up?.callGreeks?.[i]
@@ -900,6 +1050,9 @@ export default function OptionChain() {
                       <CallRow
                         key={strike}
                         strike={strike}
+                        spot={spotLtp}
+                        refIvPct={refIvPct}
+                        tYears={tYears}
                         isAtm={strike === atm}
                         itm={!!(atm && strike < atm)}
                         dimmed={isSearching && matchedSides?.[i] && !matchedSides[i].call}
@@ -919,7 +1072,7 @@ export default function OptionChain() {
                       />
                     )
                   })}
-                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: bottomPad }} /></tr>}
+                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={12} style={{ height: bottomPad }} /></tr>}
                 </tbody>
               </table>
             </div>
@@ -945,15 +1098,15 @@ export default function OptionChain() {
               <div className="oc-side-band oc-put-band">PUT</div>
               <table className="oc-table oc-side-table">
                 <colgroup>
-                  <col className="oc-col-ltp" /><col className="oc-col-bidask" /><col className="oc-col-oi" />
+                  <col className="oc-col-ltp" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-val" /><col className="oc-col-bidask" /><col className="oc-col-oi" />
                   <col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" /><col className="oc-col-greek" />
                 </colgroup>
                 <thead>
-                  <tr className="oc-side-head"><th className="oc-put" colSpan={8}>PUT</th></tr>
-                  <tr className="oc-col-head"><th className="oc-ltp">LTP</th><th>Bid / Ask</th><th>OI</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr>
+                  <tr className="oc-side-head"><th className="oc-put" colSpan={12}>PUT</th></tr>
+                  <tr className="oc-col-head"><th className="oc-ltp">LTP</th><th title="Extr − Theo. Positive = trading rich vs the reference IV; negative = cheap.">Diff</th><th title="Theoretical extrinsic = Black-Scholes price at the reference IV − Intrinsic">Theo</th><th title="Extrinsic (time) value = LTP − Intrinsic">Extr</th><th title="Intrinsic value = max(0, Strike − Spot)">Intr</th><th>Bid / Ask</th><th>OI</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr>
                 </thead>
                 <tbody>
-                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: topPad }} /></tr>}
+                  {topPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={12} style={{ height: topPad }} /></tr>}
                   {rowIndexes.map((i) => {
                     const strike = chain.strikes[i]
                     const pg = up?.putGreeks?.[i]
@@ -961,6 +1114,9 @@ export default function OptionChain() {
                       <PutRow
                         key={strike}
                         strike={strike}
+                        spot={spotLtp}
+                        refIvPct={refIvPct}
+                        tYears={tYears}
                         isAtm={strike === atm}
                         itm={!!(atm && strike > atm)}
                         dimmed={isSearching && matchedSides?.[i] && !matchedSides[i].put}
@@ -980,7 +1136,7 @@ export default function OptionChain() {
                       />
                     )
                   })}
-                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={8} style={{ height: bottomPad }} /></tr>}
+                  {bottomPad > 0 && <tr className="oc-virtual-spacer"><td colSpan={12} style={{ height: bottomPad }} /></tr>}
                 </tbody>
               </table>
             </div>
